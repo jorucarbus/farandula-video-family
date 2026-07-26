@@ -1,0 +1,31 @@
+{
+  "name": "farandula-video-family",
+  "version": "1.0.0",
+  "description": "Family-friendly video generator - no ElevenLabs, local downloads, per-user auth",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "archiver": "^6.0.1",
+    "axios": "^1.18.1",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "google-auth-library": "^10.9.0",
+    "googleapis": "^173.0.0",
+    "jsonwebtoken": "^9.1.2",
+    "multer": "^2.2.0",
+    "pg": "^8.11.3",
+    "youtube-dl-exec": "^3.1.9"
+  }
+}

@@ -1,0 +1,640 @@
+/* ===== Neobrutalism ===== */
+
+/* Tipografía auto-hospedada (sin CDN externo). Space Grotesk = títulos/UI, Inter = texto. */
+@font-face {
+    font-family: 'Space Grotesk';
+    src: url('fonts/space-grotesk.woff2') format('woff2');
+    font-weight: 400 700;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Inter';
+    src: url('fonts/inter.woff2') format('woff2');
+    font-weight: 400 700;
+    font-display: swap;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --black: #111111;
+    --purple: #a98bf5;
+    --pink: #ff90e8;
+    --green: #b8f28b;
+    --yellow: #ffd93d;
+    --orange: #ffb347;
+    --blue: #7ec8ff;
+    --card: #ffffff;
+    --shadow: 5px 5px 0 var(--black);
+    --shadow-lg: 8px 8px 0 var(--black);
+    --border: 3px solid var(--black);
+    --font-display: 'Space Grotesk', system-ui, sans-serif;
+    --font-body: 'Inter', system-ui, sans-serif;
+}
+
+body {
+    font-family: var(--font-body);
+    background: var(--purple);
+    color: var(--black);
+    min-height: 100vh;
+    padding: 24px 16px;
+    background-image: radial-gradient(var(--black) 1.5px, transparent 1.5px);
+    background-size: 28px 28px;
+}
+
+h1, h2, h3, label, .btn, .col-title, .form-section::before, .historial-item .snapped::after {
+    font-family: var(--font-display);
+}
+
+.container {
+    max-width: 1140px;
+    margin: 0 auto;
+    background: var(--card);
+    border: 4px solid var(--black);
+    border-radius: 20px;
+    box-shadow: var(--shadow-lg);
+}
+
+/* Header (sticky: queda visible al hacer scroll dentro del contenedor) */
+header {
+    background: var(--pink);
+    color: var(--black);
+    padding: 36px 24px;
+    text-align: center;
+    border-bottom: 4px solid var(--black);
+    border-radius: 16px 16px 0 0;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+header h1 {
+    font-size: 2.6rem;
+    font-weight: 900;
+    letter-spacing: -1px;
+    line-height: 1.05;
+    text-transform: uppercase;
+}
+
+.subtitle {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-top: 10px;
+    display: inline-block;
+    background: var(--yellow);
+    border: var(--border);
+    border-radius: 999px;
+    padding: 4px 16px;
+    box-shadow: 3px 3px 0 var(--black);
+}
+
+main {
+    padding: 32px 28px;
+}
+
+/* Secciones (tarjetas de colores rotativos) */
+.form-section {
+    margin-bottom: 16px;
+    padding: 16px;
+    background: var(--card);
+    border: var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+}
+.form-section:nth-of-type(4n+1) { background: #fff6e5; }
+.form-section:nth-of-type(4n+2) { background: #eafbe0; }
+.form-section:nth-of-type(4n+3) { background: #ffe9fb; }
+.form-section:nth-of-type(4n+4) { background: #e5f4ff; }
+
+/* Iconos (SVG inline, Phosphor bold) */
+.icon, .icon-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.1em;
+    height: 1.1em;
+    vertical-align: -0.18em;
+}
+.icon svg, .icon-slot svg { width: 100%; height: 100%; }
+
+/* Productos en progreso: guion/audio/video-insumos del job actual. Opaco hasta que exista, se enciende al estar listo. */
+.productos-actual { margin-bottom: 8px; }
+.producto-slot {
+    border: var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    background: var(--card);
+    box-shadow: var(--shadow);
+    opacity: 0.4;
+    filter: grayscale(65%);
+    transition: opacity 0.25s ease, filter 0.25s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.producto-slot[data-status="listo"] {
+    opacity: 1;
+    filter: none;
+    border-color: #2f8f2f;
+    box-shadow: 6px 6px 0 var(--black);
+}
+.producto-slot-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    font-size: 0.85rem;
+    letter-spacing: -0.2px;
+    margin-bottom: 6px;
+}
+.producto-slot-body {
+    font-size: 0.85rem;
+    color: #444;
+    line-height: 1.45;
+}
+.producto-slot[data-status="listo"] .producto-slot-body { color: var(--black); }
+.producto-slot-body audio,
+.producto-slot-body video {
+    width: 100%;
+    margin-top: 4px;
+    border: 2px solid var(--black);
+    border-radius: 8px;
+}
+.producto-slot-body a { color: var(--black); font-weight: 800; text-decoration: underline; }
+
+/* Palanca (switch) de modo: Video final <-> Insumos */
+.modo-switch {
+    position: relative;
+    display: flex;
+    border: var(--border);
+    border-radius: 999px;
+    background: var(--card);
+    box-shadow: var(--shadow);
+    padding: 5px;
+    margin-bottom: 28px;
+}
+.modo-thumb {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    width: calc(50% - 5px);
+    height: calc(100% - 10px);
+    background: var(--pink);
+    border: 2px solid var(--black);
+    border-radius: 999px;
+    transition: transform 0.25s cubic-bezier(.2,.8,.2,1), background 0.25s ease;
+    z-index: 0;
+}
+.modo-switch[data-modo="insumos"] .modo-thumb {
+    transform: translateX(100%);
+    background: var(--yellow);
+}
+.modo-opt {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    border: none;
+    background: transparent;
+    padding: 12px 14px;
+    font-weight: 800;
+    font-family: var(--font-display);
+    font-size: 0.95rem;
+    text-transform: uppercase;
+    letter-spacing: -0.2px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--black);
+    opacity: 0.5;
+    transition: opacity 0.2s ease;
+}
+.modo-switch[data-modo="video"] .modo-opt[data-opt="video"],
+.modo-switch[data-modo="insumos"] .modo-opt[data-opt="insumos"] {
+    opacity: 1;
+}
+
+/* Layout 2 columnas: Procesos (izquierda) / Productos (derecha) */
+.layout-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+    margin-bottom: 28px;
+}
+/* min-width:0 evita que el scroll horizontal de .steps-grid empuje la columna
+   entera a su ancho de contenido (bug clásico de grid con hijos que scrollean) */
+.col-procesos, .col-productos { min-width: 0; }
+.col-title {
+    font-size: 1.4rem;
+    font-weight: 900;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: -0.5px;
+}
+
+/* Scroll magnético: cada bloque encaja completo, nunca queda cortado a la mitad */
+.scroll-snap-col {
+    max-height: 74vh;
+    overflow-y: auto;
+    scroll-snap-type: y proximity;
+    padding-right: 6px;
+    padding-top: 10px;
+}
+.scroll-snap-col > .form-section,
+.scroll-snap-col > .historial-item {
+    scroll-snap-align: start;
+    scroll-margin-top: 10px;
+    position: relative;
+    transition: opacity 0.18s ease, filter 0.18s ease;
+}
+
+/* Encendido/apagado: el bloque centrado en el scroll queda a color pleno, el resto opaco */
+.scroll-snap-col > .form-section,
+.scroll-snap-col > .historial-item {
+    opacity: 0.45;
+    filter: grayscale(55%);
+}
+.scroll-snap-col > .form-section.snapped,
+.scroll-snap-col > .historial-item.snapped {
+    opacity: 1;
+    filter: none;
+    border-color: var(--blue) !important;
+    box-shadow: 6px 6px 0 var(--black) !important;
+}
+/* Un paso bloqueado nunca se "enciende" aunque quede centrado en el scroll */
+.steps-grid .form-section[data-status="locked"].snapped {
+    opacity: 0.5;
+    filter: grayscale(70%);
+    box-shadow: var(--shadow) !important;
+    border-color: var(--black) !important;
+}
+
+/* Procesos (Paso 1-6): carrusel horizontal, UN paso completo a la vez
+   (no "peek" del siguiente) — se navega con las flechas de .pasos-nav */
+.pasos-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin-bottom: 10px;
+}
+.pasos-nav-btn {
+    background: var(--card);
+    border: var(--border);
+    border-radius: 999px;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 3px 3px 0 var(--black);
+    transition: transform 0.06s ease;
+}
+.pasos-nav-btn:hover { transform: translate(-1px, -1px); }
+.pasos-nav-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--black); }
+.pasos-nav-indicador {
+    font-weight: 800;
+    font-size: 0.85rem;
+    min-width: 90px;
+    text-align: center;
+}
+
+.steps-grid.scroll-snap-col {
+    display: flex;
+    flex-direction: row;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    padding-right: 0;
+    padding-bottom: 12px;
+    gap: 0;
+}
+.steps-grid.scroll-snap-col::-webkit-scrollbar { display: none; }
+.steps-grid.scroll-snap-col > .form-section {
+    flex: 0 0 100%;
+    width: 100%;
+    scroll-margin-top: 0;
+    scroll-margin-left: 0;
+}
+
+@media (max-width: 900px) {
+    .layout-cols { grid-template-columns: 1fr; }
+    .col-productos { order: 1; }
+    .col-procesos { order: 2; }
+    .scroll-snap-col { max-height: 50vh; }
+}
+
+/* Grid de pasos (Bloque B: todos los pasos visibles a la vez) */
+.steps-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 24px;
+    align-items: start;
+    margin-bottom: 0;
+}
+
+.steps-grid .form-section {
+    margin-bottom: 0;
+    position: relative;
+    transition: opacity 0.2s ease, filter 0.2s ease, box-shadow 0.15s ease;
+}
+
+/* Badge de estado (esquina superior derecha de cada tarjeta) — elemento real, no ::before, para poder llevar un icono SVG */
+.step-badge {
+    position: absolute;
+    top: -14px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--yellow);
+    border: 2px solid var(--black);
+    border-radius: 999px;
+    padding: 3px 12px;
+    font-size: 0.72rem;
+    font-weight: 900;
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    box-shadow: 2px 2px 0 var(--black);
+}
+.form-section[data-status="active"] .step-badge { background: var(--blue); }
+.form-section[data-status="done"] .step-badge { background: var(--green); }
+
+.steps-grid .form-section[data-status="locked"] {
+    opacity: 0.5;
+    filter: grayscale(70%);
+    pointer-events: none;
+}
+.steps-grid .form-section[data-status="done"] { border-color: #2f8f2f; }
+.steps-grid .form-section[data-status="active"] { box-shadow: var(--shadow-lg); }
+
+.form-section h2 {
+    font-size: 1.05rem;
+    font-weight: 900;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: -0.3px;
+}
+
+.form-group { margin-bottom: 12px; }
+
+label {
+    display: block;
+    font-weight: 800;
+    margin-bottom: 8px;
+}
+
+input[type="text"],
+input[type="password"],
+textarea,
+select {
+    width: 100%;
+    padding: 13px 14px;
+    border: var(--border);
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: 600;
+    background: var(--card);
+    box-shadow: 2px 2px 0 var(--black);
+}
+
+textarea { resize: vertical; min-height: 100px; }
+
+input:focus,
+textarea:focus,
+select:focus {
+    outline: none;
+    box-shadow: 4px 4px 0 var(--black);
+    transform: translate(-1px, -1px);
+}
+
+/* Botones */
+.btn {
+    padding: 14px 26px;
+    border: var(--border);
+    border-radius: 12px;
+    font-size: 1rem;
+    font-weight: 800;
+    cursor: pointer;
+    width: 100%;
+    box-shadow: var(--shadow);
+    transition: transform 0.06s ease, box-shadow 0.06s ease;
+    text-transform: uppercase;
+    letter-spacing: -0.3px;
+}
+.btn:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--black); }
+.btn:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--black); }
+
+.btn-primary { background: var(--pink); color: var(--black); }
+.btn-success { background: var(--green); color: var(--black); }
+.btn-secondary { background: var(--yellow); color: var(--black); }
+
+/* Grid de ángulos */
+.angles-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.angle-card {
+    padding: 18px;
+    background: var(--card);
+    border: var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    text-align: center;
+    box-shadow: 3px 3px 0 var(--black);
+    transition: transform 0.06s ease, box-shadow 0.06s ease;
+}
+.angle-card:nth-child(5n+1) { background: #fff6e5; }
+.angle-card:nth-child(5n+2) { background: #eafbe0; }
+.angle-card:nth-child(5n+3) { background: #ffe9fb; }
+.angle-card:nth-child(5n+4) { background: #e5f4ff; }
+.angle-card:nth-child(5n+5) { background: #fff0d6; }
+
+.angle-card:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--black); }
+
+.angle-card strong { display: block; margin-bottom: 6px; font-weight: 900; }
+.angle-card p { font-size: 0.85rem; font-weight: 600; }
+.angle-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: var(--black);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 0.8rem;
+    margin-right: 4px;
+}
+
+.angle-card.selected {
+    background: var(--yellow);
+    box-shadow: 6px 6px 0 var(--black);
+    transform: translate(-2px, -2px);
+}
+
+/* Progreso: tarjeta compacta debajo de Historial (ya no flotante/fixed) */
+#progress-section {
+    margin-top: 16px;
+    background: var(--card);
+    padding: 12px 14px;
+    border: var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+}
+.progress-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.82rem;
+    font-weight: 800;
+    margin-bottom: 8px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 12px;
+    background: var(--card);
+    border: var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 0;
+    box-shadow: 2px 2px 0 var(--black);
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--green);
+    width: 0%;
+    transition: width 0.3s ease;
+    border-right: 3px solid var(--black);
+}
+
+.log-box {
+    background: var(--black);
+    color: #7CFC00;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    max-height: 110px;
+    overflow-y: auto;
+    margin-top: 10px;
+    border: 2px solid var(--black);
+}
+
+/* Resultado */
+.result-info {
+    background: var(--green);
+    border: var(--border);
+    padding: 20px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+.result-info p { margin-bottom: 10px; line-height: 1.5; font-weight: 600; }
+.result-info a { color: var(--black); font-weight: 900; text-decoration: underline; }
+.result-info code {
+    background: var(--card);
+    border: 2px solid var(--black);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-weight: 700;
+}
+.result-info video {
+    border: var(--border);
+    box-shadow: var(--shadow);
+}
+
+/* Bloques de copiar */
+.copy-block {
+    background: var(--card);
+    border: var(--border);
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 15px;
+    box-shadow: 3px 3px 0 var(--black);
+}
+
+.copy-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.copy-header label {
+    margin-bottom: 0;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 900;
+}
+
+.btn-copy {
+    background: var(--blue);
+    border: 2px solid var(--black);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 2px 2px 0 var(--black);
+    transition: transform 0.06s ease;
+}
+.btn-copy:hover { transform: translate(-1px, -1px); }
+.btn-copy:active { transform: translate(2px, 2px); box-shadow: 0 0 0 var(--black); }
+
+.copy-content { line-height: 1.6; white-space: pre-wrap; word-break: break-word; font-weight: 500; }
+
+.cronica-details {
+    background: var(--card);
+    border: var(--border);
+    border-radius: 12px;
+    padding: 15px;
+    box-shadow: 3px 3px 0 var(--black);
+}
+.cronica-details summary { cursor: pointer; font-weight: 900; }
+.cronica-details .copy-content { margin-top: 12px; max-height: 300px; overflow-y: auto; }
+
+/* Audio player */
+audio {
+    border: var(--border);
+    border-radius: 999px;
+    box-shadow: 2px 2px 0 var(--black);
+}
+
+.hidden { display: none !important; }
+
+footer {
+    background: var(--purple);
+    padding: 18px;
+    text-align: center;
+    font-weight: 800;
+    border-top: 4px solid var(--black);
+    border-radius: 0 0 16px 16px;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    header { padding: 16px 14px; }
+    header h1 { font-size: 1.5rem; }
+    .subtitle { font-size: 0.85rem; padding: 3px 12px; margin-top: 6px; }
+    main { padding: 20px 16px; }
+    .form-section { padding: 18px; }
+    .angles-grid { grid-template-columns: 1fr; }
+}
