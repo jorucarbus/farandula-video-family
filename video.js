@@ -465,11 +465,14 @@ async function montarVideoPlan(plan, archivos, audioPath, jobId, efectos = {}) {
   return { finalPath, duracion: Math.round(durAudio), clips: segmentos.length };
 }
 
-// Limpiar archivos temporales de un job
+// Limpiar archivos temporales de un job. NO toca los clips fuente cacheados (src_*.mp4):
+// ese caché es compartido entre jobs a propósito, y borrarlo aquí corría la carrera de que
+// un job terminando/fallando eliminara el clip que OTRO job concurrente acababa de descargar
+// y estaba por leer con ffmpeg.
 function limpiarTemporales(jobId) {
   try {
     for (const f of fs.readdirSync(TEMP_DIR)) {
-      if (f.startsWith(jobId) || f.startsWith('src_')) {
+      if (f.startsWith(jobId)) {
         try { fs.unlinkSync(path.join(TEMP_DIR, f)); } catch {}
       }
     }

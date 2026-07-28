@@ -14,13 +14,9 @@
         </header>
 
         <main>
-            <div class="form-section hidden" id="apikey-banner" style="background:#fff8e1;border:1px solid #ffca28;">
-                <h2><span class="icon-slot" data-icon="key"></span> Ingresa tu API Key</h2>
-                <p style="color:#666;font-size:0.9rem;margin-bottom:8px;">La que está en el <code>.env</code> del servidor (variable <code>API_KEY</code>).</p>
-                <div class="form-group">
-                    <input type="password" id="apikey-input" placeholder="API Key..." style="width:100%;padding:10px;" onkeydown="if(event.key==='Enter')guardarApiKey()">
-                </div>
-                <button class="btn btn-primary" onclick="guardarApiKey()">Guardar y continuar</button>
+            <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+                <span id="user-email" style="color:#666;font-size:0.85rem;margin-right:12px;align-self:center;"></span>
+                <button class="btn btn-secondary" onclick="logout()"><span class="icon-slot" data-icon="arrowLeft"></span> Salir</button>
             </div>
 
             <div class="layout-cols">
@@ -60,13 +56,6 @@
             <div class="form-section" id="fuente-section" data-status="active">
                 <span class="step-badge"></span>
                 <h2>Paso 1: Proporciona la fuente</h2>
-
-                <div class="form-group">
-                    <label for="canal-select">Selecciona el canal:</label>
-                    <select id="canal-select">
-                        <option value="">Cargando canales...</option>
-                    </select>
-                </div>
 
                 <div class="form-group">
                     <label for="source-type">Tipo de fuente:</label>
@@ -174,32 +163,24 @@
 
             <div class="form-section" id="audio-section" data-status="locked">
                 <span class="step-badge"></span>
-                <h2>Paso 5: Escucha y aprueba la locución</h2>
-                <p id="audio-info" style="color:#666;font-size:0.9rem;margin-bottom:8px;"></p>
-                <audio id="audio-player" controls style="width:100%;margin-bottom:12px;"></audio>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                    <button class="btn btn-success" id="btn-approve-audio" onclick="aprobarAudio()"><span class="icon-slot" data-icon="check"></span> Aprobar locución</button>
-                    <button class="btn btn-primary" id="btn-regenerate-audio-v3" onclick="regenerarAudio('eleven_v3')"><span class="icon-slot" data-icon="arrowsClockwise"></span> Regenerar (v3, actúa marcas)</button>
-                    <button class="btn btn-secondary" id="btn-regenerate-audio-v2" onclick="regenerarAudio('eleven_multilingual_v2')"><span class="icon-slot" data-icon="microphone"></span> Regenerar con v2 (acento forzado español)</button>
-                    <button class="btn btn-secondary" id="btn-recargar-audio" onclick="recargarAudioDeDrive()"><span class="icon-slot" data-icon="arrowsClockwise"></span> Recargar audio desde Drive</button>
+                <h2>Paso 5: Sube tu locución</h2>
+                <p style="color:#666;font-size:0.9rem;margin-bottom:10px;">
+                    Graba o genera el audio con tu IA favorita y súbelo aquí en formato MP3.
+                </p>
+                <div class="form-group">
+                    <input type="file" id="audio-file-input" accept=".mp3,audio/mpeg" onchange="handleAudioFileSelected()">
                 </div>
-                <p style="color:#666;font-size:0.85rem;margin-top:8px;">
-                    ¿Reemplazaste el <code>audio.mp3</code> de la carpeta de insumos en Drive con una voz hecha en otra parte? Pulsa "Recargar audio desde Drive" para incorporarla.
-                </p>
-                <p style="color:#666;font-size:0.85rem;margin-top:8px;">
-                    v3 actúa las emociones pero a veces cambia el acento. v2 fuerza el idioma (más estable) pero lee plano.
-                </p>
+                <button class="btn btn-primary" id="btn-upload-audio" onclick="handleUploadAudio()" disabled>
+                    <span class="icon-slot" data-icon="microphone"></span> Subir audio
+                </button>
+                <p id="audio-info" style="color:#666;font-size:0.9rem;margin:10px 0;"></p>
+                <audio id="audio-player" controls style="width:100%;margin-bottom:12px;display:none;"></audio>
+                <button class="btn btn-success hidden" id="btn-approve-audio" onclick="aprobarAudio()"><span class="icon-slot" data-icon="check"></span> Aprobar locución</button>
             </div>
 
             <div class="form-section" id="destination-section" data-status="locked">
                 <span class="step-badge"></span>
-                <h2>Paso 6: Selecciona carpeta de destino</h2>
-                <div class="form-group">
-                    <label for="dest-folder">Carpeta en Google Drive:</label>
-                    <select id="dest-folder">
-                        <option value="">Cargando carpetas...</option>
-                    </select>
-                </div>
+                <h2>Paso 6: Genera y descarga</h2>
 
                 <div class="form-group">
                     <label for="efecto-zoom">Efecto zoom (activo toda la toma):</label>
@@ -227,7 +208,8 @@
                 </div>
 
                 <button class="btn btn-success" id="btn-generate-video" onclick="handleGenerateVideo()">
-                    <span class="icon-slot" data-icon="rocketLaunch"></span> Generar video completo
+                    <span class="icon-slot" data-icon="rocketLaunch"></span>
+                    <span id="btn-generate-video-label">Generar y descargar video</span>
                 </button>
             </div>
 

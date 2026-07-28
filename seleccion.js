@@ -10,7 +10,6 @@
 // - Loop de TikTok: el primer y último clip del video final nunca salen del mismo video fuente.
 const fs = require('fs');
 const path = require('path');
-const driveCache = require('./driveCache');
 
 const HISTORIAL_FILE = path.join(__dirname, 'historial.json');
 const CLIP_MAX = 3;        // duración máxima de una toma
@@ -22,8 +21,6 @@ function cargarHistorial() {
 
 function guardarHistorial(h) {
   fs.writeFileSync(HISTORIAL_FILE, JSON.stringify(h, null, 2));
-  // Bloque D: respaldo en Drive (fire-and-forget, Railway borra el disco en cada redeploy)
-  driveCache.respaldar(HISTORIAL_FILE, 'historial.json');
 }
 
 function shuffle(arr) {
