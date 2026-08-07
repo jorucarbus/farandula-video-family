@@ -47,45 +47,6 @@ PROHIBIDO:
 - Explicar el contexto antes del clímax (arranca directo en la acción).
 - Párrafos separados (TODO en un solo párrafo).
 - Numerar, listar o contar palabras en la salida: entrega SOLO el texto del guion.`,
-
-  fragmentacion: `Rol: Asistente de fragmentación para edición automática en TikTok.
-
-INSTRUCCIONES CRÍTICAS:
-1. Fragmentación de "Corte Rápido": Cada segmento debe durar 1.5-3 segundos.
-2. Sentido de Oración: No dejes palabras sueltas. Cada línea debe tener significado lógico.
-3. Límite: Máximo 55-60 caracteres por línea.
-4. Corte Sintáctico: Separa Sujeto en una línea, Predicado (desde verbo) en la siguiente.
-5. Saltos Obligatorios: En comas, puntos, signos de exclamación.
-6. Conectores: Salto antes de "y", "que", "pero", "porque", "cuando", "aunque".
-
-FORMATO DE SALIDA:
-Cada línea en formato: Nombre_Carpeta: [fragmento con sentido]
-
-Las carpetas disponibles son: [LISTA_DE_CARPETAS]
-
-Asigna el famoso más relevante a cada fragmento basándote en el contenido.`,
-
-  marcas: `Rol: Senior Audio Engineer & Prompting Strategist para ElevenLabs v3.
-
-Objetivo: Procesar guiones fragmentados y transformarlos en una descarga eléctrica de palabras para voz femenina mexicana (chilanga/fresa/moderna).
-
-DICCIONARIO DE ETIQUETAS (Strictly English):
-[excited]: Hook inicial y picos de dopamina.
-[fast]: Estado por defecto. Elimina aire entre frases.
-[sarcastic]: Veneno, ironía, modismos mexicanos.
-[whispering]: Conspiraciones rápidas (sin bajar velocidad).
-[laughing]: Burla descarada o incredulidad.
-[shouting]: Énfasis explosivo en palabras clave.
-[surprised]: Shock que mantiene al usuario pegado.
-
-REGLAS DE ORO:
-1. Cero Pausas: PROHIBIDO usar [pause]. Si hay puntos, ignóralos en la cadencia y usa [fast].
-2. Efecto Slingshot: El final debe ser un disparo de energía. Termina con [fast] o [excited] que se corte abruptamente.
-3. No Alterar Texto: Mantén palabras intactas, solo saturarlas de etiquetas.
-4. Bloque Único: Resultado en un solo bloque denso. Sin introducciones.
-
-FORMATO DE RESPUESTA:
-Un solo bloque con el guion fragmentado saturado de etiquetas.`
 };
 
 // Un intento contra UN modelo, con reintentos internos por sobrecarga temporal.
@@ -461,112 +422,6 @@ Carpetas disponibles: ${carpetas.join(', ')}`;
   }
 }
 
-// ETAPA 3 (v1, se mantiene por compatibilidad): Fragmentar + Asignar Carpetas
-async function fragmentarGuion(script, carpetas) {
-  try {
-    const carpetasString = carpetas.join(', ');
-    const prompt = PROMPTS.fragmentacion.replace('[LISTA_DE_CARPETAS]', carpetasString);
-
-    const userMessage = `Fragmenta este guion:\n\n${script}`;
-    const response = await callGemini(prompt, userMessage);
-
-    // Parsear respuesta en líneas (dividir solo en el PRIMER ':' para no cortar el texto)
-    const fragmentos = response.split('\n')
-      .filter(line => line.trim() && line.includes(':'))
-      .map(line => {
-        const idx = line.indexOf(':');
-        const famoso = line.slice(0, idx).trim().replace(/^[-*\d.\s]+/, '');
-        const texto = line.slice(idx + 1).trim();
-        return {
-          famoso: famoso,
-          texto: texto,
-          caracteres: texto.length,
-        };
-      })
-      .filter(f => f.famoso && f.texto);
-
-    console.log(`  ✂️ ${fragmentos.length} fragmentos, ${fragmentos.reduce((s, f) => s + f.caracteres, 0)} caracteres totales`);
-    return fragmentos;
-  } catch (error) {
-    throw new Error(`Error fragmentando: ${error.message}`);
-  }
-}
-
-// HYPERFRAMES: guion técnico de edición. Para cada párrafo (desde el 2do) decide
-// la transición de entrada y el efecto de sonido según la energía narrativa.
-const TRANSICIONES_VALIDAS = ['fade', 'slideleft', 'slideright', 'wipeleft', 'wiperight', 'circleopen', 'dissolve', 'zoomin', 'fadeblack', 'hblur', 'corte'];
-const SFX_VALIDOS = ['whoosh', 'impacto', 'pop', 'riser', 'ninguno'];
-
-async function generarGuionTecnico(parrafos) {
-  try {
-    const prompt = `Rol: Director de edición de videos virales de farándula para TikTok.
-
-Recibes los párrafos numerados de un guion. Para cada párrafo DESDE EL SEGUNDO, decide cómo ENTRA en pantalla (la transición desde el párrafo anterior) y qué efecto de sonido acompaña ese corte, según la energía narrativa.
-
-TRANSICIONES (usa exactamente estos nombres):
-- corte: cambio seco, ritmo rápido (úsalo en al menos el 30% de los cortes)
-- fade: neutra, respiro
-- slideleft / slideright: cambio de tema o de persona
-- wipeleft / wiperight: revelación de información
-- circleopen: bombazo, dato explosivo
-- dissolve: misterio, rumor
-- zoomin: énfasis, acercamiento al detalle
-- fadeblack: giro oscuro de la historia
-- hblur: transición energética
-
-SFX (usa exactamente estos nombres):
-- whoosh: acompaña movimiento/cambio
-- impacto: dato fuerte o bombazo
-- pop: dato curioso, acento ligero
-- riser: suspenso creciente antes de una revelación
-- ninguno
-
-EMOJI:
-- A los 3-4 párrafos MÁS impactantes asígnales UN emoji que refuerce la emoción (😱🔥💔👀💰🤫😂❌). Al resto, cadena vacía "".
-
-REGLAS:
-1. No repitas la misma transición en dos cortes consecutivos.
-2. El SFX debe reforzar la narrativa del párrafo que ENTRA, no decorar porque sí.
-3. Responde ÚNICAMENTE con un array JSON: [{"parrafo": 2, "transicion": "...", "sfx": "...", "emoji": ""}, ...] para los párrafos 2 a N.`;
-
-    const lista = parrafos.map((p, i) => `${i + 1}. [${p.famoso}] ${p.texto}`).join('\n');
-    const cortes = await llamarJSON(prompt, `Párrafos del guion:\n\n${lista}`);
-    if (!Array.isArray(cortes)) throw new Error('Guion técnico no es un array');
-
-    // Sanear: solo valores válidos, indexado por número de párrafo
-    const mapa = {};
-    for (const c of cortes) {
-      const idx = Number(c.parrafo);
-      if (!idx || idx < 2 || idx > parrafos.length) continue;
-      mapa[idx] = {
-        transicion: TRANSICIONES_VALIDAS.includes(c.transicion) ? c.transicion : 'corte',
-        sfx: SFX_VALIDOS.includes(c.sfx) ? c.sfx : 'ninguno',
-        emoji: typeof c.emoji === 'string' ? c.emoji.trim() : '',
-      };
-    }
-    console.log(`  🎬 Guion técnico: ${Object.keys(mapa).length} cortes definidos`);
-    return mapa; // {2: {transicion, sfx}, 3: {...}, ...}
-  } catch (error) {
-    throw new Error(`Error en guion técnico: ${error.message}`);
-  }
-}
-
-// ETAPA 4: Agregar Marcas ElevenLabs
-async function agregarMarcas(guionFragmentado) {
-  try {
-    const guionText = guionFragmentado
-      .map(f => `${f.famoso}: ${f.texto}`)
-      .join('\n');
-
-    const userMessage = `Procesa este guion fragmentado y agrega las etiquetas de actuación:\n\n${guionText}`;
-    const response = await callGemini(PROMPTS.marcas, userMessage);
-
-    return response.trim();
-  } catch (error) {
-    throw new Error(`Error agregando marcas: ${error.message}`);
-  }
-}
-
 // Generar nombre corto de archivo: "Protagonista - Secundario - Hecho"
 async function generarNombreArchivo(guion) {
   try {
@@ -602,9 +457,6 @@ function getAngleName(angle) {
 module.exports = {
   procesarLectura,
   generarGuion,
-  fragmentarGuion,
   fragmentarGuionParrafos,
-  generarGuionTecnico,
-  agregarMarcas,
   generarNombreArchivo,
 };
