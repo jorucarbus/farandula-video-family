@@ -435,38 +435,53 @@ function verificarReconstruccion(script, parrafos) {
   return { ok: false, mensaje, desvio, posicion: i };
 }
 
-// Fragmentación POR GUION: los cortes salen del texto y del cambio de sujeto.
+// Fragmentación POR GUION: los cortes salen del texto y de a quién se nombra en cada clip.
 // Es la única implementación viva hoy. Ver FRAGMENTADORES abajo para la puerta abierta.
+//
+// Reescrito 2026-08-08 (portado del repo principal, commit del mismo día): el ritmo de corte es
+// de SINTAXIS (coma, conector, sujeto/predicado), no "una oración completa por fragmento", y la
+// carpeta la decide LA MENCIÓN, no el sujeto gramatical — la regla vieja dejaba a Clara Chía
+// nombrada pero nunca en pantalla.
 async function fragmentarPorGuion(script, carpetas) {
-  const prompt = `Rol: Editor de contenido para videos de farándula en TikTok, especializado en ritmo de "corte rápido".
+  const prompt = `Rol: Editor de contenido para videos de farándula en TikTok, especializado en ritmo de "corte rápido": fragmentos cortos, entre 1.5 y 3 segundos de habla cada uno (aprox. 40-60 caracteres), sin perder el sentido.
 
-TAREA: Divide el guion en fragmentos y asigna a cada uno la carpeta del famoso del que se habla EN ESE FRAGMENTO.
+TAREA: Divide el guion en fragmentos MUY CORTOS y asigna a cada uno la carpeta del famoso del que trata ESE fragmento específico.
 
 Principio que manda sobre todo lo demás: en pantalla se ve el famoso asignado al fragmento
-mientras se escucha ese fragmento. Si el texto pasa a hablar de otra persona y el fragmento no
-se parte, se queda en pantalla la persona equivocada. Evitar eso es la prioridad.
+mientras se escucha ese fragmento. El ritmo rápido solo funciona si la cara en pantalla es
+SIEMPRE la correcta para lo que se dice en ese instante exacto — eso es la prioridad, por
+encima del ritmo.
 
-REGLAS:
-1. El punto de partida es una oración completa por fragmento (delimitada por punto, signo de
-   exclamación o interrogación). No agrupes varias oraciones en un fragmento.
-2. OBLIGATORIO: si DENTRO de una misma oración el sujeto del que se habla cambia de un famoso a
-   otro, PARTE la oración en ese punto, sin importar lo corta que sea. Corta justo antes del
-   conector o de la coma que separa a los dos sujetos. Esto no es opcional y no depende de la
-   longitud.
-   Ejemplo: "Shakira apareció radiante en la alfombra roja, pero Piqué prefirió quedarse en casa."
-   → DOS fragmentos:
-      "Shakira apareció radiante en la alfombra roja," (carpeta de Shakira)
-      "pero Piqué prefirió quedarse en casa." (carpeta de Piqué)
-3. Aparte de la regla 2: si una oración es muy larga (más de ~140 caracteres) y tiene una pausa
-   natural fuerte (coma antes de "pero", "y", "porque", "mientras", "aunque"), puedes partirla
-   ahí aunque el sujeto no cambie.
+REGLAS DE CORTE (dónde parte el texto):
+1. Parte SIEMPRE en punto, coma, signo de exclamación o interrogación, y ANTES de conectores
+   como "y", "que", "pero", "porque", "cuando", "mientras", "aunque".
+2. Si después de la regla 1 un fragmento todavía pasa de ~60 caracteres, sepáralo en Sujeto
+   (quién/qué) y Predicado (el resto, empezando en el verbo).
+3. Ningún fragmento queda sin sentido propio ni con palabras sueltas — una sola palabra no es
+   un fragmento válido.
 4. El texto de los fragmentos unidos debe reconstruir el guion COMPLETO, en el mismo orden, sin
    omitir, agregar ni cambiar NI UNA palabra. Se verifica automáticamente.
-5. Usa el nombre EXACTO de la carpeta (respeta mayúsculas y guiones bajos).
-6. Cada fragmento debe tener UN SOLO famoso. Si después de aplicar la regla 2 un fragmento
-   todavía nombra a dos, elige a quien sea el SUJETO de la acción, no al mencionado de pasada.
-   (Ej.: "Shakira habló del divorcio con Piqué" → el sujeto es Shakira.)
-7. Responde ÚNICAMENTE con un array JSON válido: [{"parrafo": "texto", "carpeta": "Nombre_Carpeta"}]
+
+REGLAS DE CARPETA (a quién se le asigna cada fragmento):
+5. Un fragmento se etiqueta con la persona de la que TRATA ese fragmento — no automáticamente
+   la misma del fragmento anterior.
+6. Si el fragmento NOMBRA a alguien, esa mención GANA, aunque sea de pasada (complemento,
+   "con X", "en el concierto de X"). No hace falta que sea el sujeto gramatical de la acción.
+   Ejemplo: "Piqué, del otro lado del Atlántico, publicaba una historia" (Gerard_Pique) →
+   "con Clara Chía justo a la misma hora." (Clara_Chia) — dos fragmentos, dos carpetas, porque
+   el segundo NOMBRA a Clara Chía.
+7. Si el fragmento NO nombra a nadie, sigue al referente implícito de la idea (pronombres y
+   posesivos: "su", "ella", "lo", "la"). Puede ser la persona nombrada más recientemente, o la
+   persona de la que trataba la idea ANTES de una mención de paso — según a quién se refiera
+   el pronombre, no según cuál carpeta usó el fragmento inmediato anterior.
+   Ejemplo real: "...vieron a la pequeña Celeste" (Celeste_Moran) → "brillar vestida de
+   vaquera" (Celeste_Moran, sigue la idea) → "en el concierto de Dayanara Peralta," (Dayanara —
+   nombra a Dayanara, cambia) → "pero lo que la transmisión oficial" (Dayanara, sigue el tema
+   del concierto) → "intentó ocultar fue el absoluto vacío" (Dayanara) → "de su micrófono
+   apagado." (Celeste_Moran — "su" es el de Celeste, vuelve a ella aunque el fragmento anterior
+   fuera de Dayanara).
+8. Usa el nombre EXACTO de la carpeta (respeta mayúsculas y guiones bajos).
+9. Responde ÚNICAMENTE con un array JSON válido: [{"parrafo": "texto", "carpeta": "Nombre_Carpeta"}]
 
 Carpetas disponibles: ${carpetas.join(', ')}`;
 
