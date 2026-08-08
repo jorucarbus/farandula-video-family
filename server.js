@@ -209,12 +209,19 @@ app.post('/api/fragment', async (req, res) => {
     job.guion = script || job.guion;
     job.paso = 'fragmentos';
 
+    // Si los fragmentos no reconstruyen el guion, los tiempos de TODOS los clips quedan
+    // corridos. No aborta (el video igual sale) pero el usuario tiene que enterarse.
+    const avisoReconstruccion = fragments.verificacion && !fragments.verificacion.ok
+      ? fragments.verificacion.mensaje
+      : null;
+
     res.json({
       jobId,
       fragments,
       carpetas: nombresCarpetas,
       protagonistaSinCarpeta: job.protagonista && !nombresCarpetas.includes(job.protagonista),
       protagonista: job.protagonista,
+      avisoReconstruccion,
     });
   } catch (error) {
     console.error('Error en /api/fragment:', error.message);

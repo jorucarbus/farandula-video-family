@@ -348,6 +348,7 @@ async function aprobarGuion() {
         const result = await apiCall('/fragment', 'POST', { jobId: state.jobId, script: state.guion });
         state.fragments = result.fragments;
         state.carpetas = result.carpetas;
+        state.avisoReconstruccion = result.avisoReconstruccion || null;
         renderAsignaciones(result.protagonistaSinCarpeta, result.protagonista);
 
         hideProgress();
@@ -367,6 +368,19 @@ function renderAsignaciones(protagonistaSinCarpeta, protagonistaNombre) {
         aviso.classList.remove('hidden');
     } else {
         aviso.classList.add('hidden');
+    }
+
+    // Los fragmentos deben reconstruir el guion palabra por palabra: el tiempo en pantalla de
+    // cada clip sale de su proporción de caracteres. Si no coinciden, todos los clips quedan
+    // corridos respecto de la locución — y no falla nada a la vista, por eso hay que avisarlo.
+    const avisoRec = document.getElementById('aviso-reconstruccion');
+    if (avisoRec) {
+        if (state.avisoReconstruccion) {
+            avisoRec.textContent = `⚠️ ${state.avisoReconstruccion}`;
+            avisoRec.classList.remove('hidden');
+        } else {
+            avisoRec.classList.add('hidden');
+        }
     }
 
     const lista = document.getElementById('lista-asignaciones');

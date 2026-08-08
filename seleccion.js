@@ -12,7 +12,16 @@ const fs = require('fs');
 const path = require('path');
 
 const HISTORIAL_FILE = path.join(__dirname, 'historial.json');
-const CLIP_MAX = 3;        // duración máxima de una toma
+// CLIP_MAX es un LÍMITE LEGAL, no estético: ningún clip de material ajeno puede pasar de 3
+// segundos (uso legítimo). No subirlo sin decisión explícita del usuario, y al agregar capas
+// nuevas de edición verificar que no lo rompan por un costado (p. ej. la cola extra que
+// necesita un `xfade` haría leer CLIP_MAX + duración-de-transición segundos continuos).
+const CLIP_MAX = 3;
+// Piso de duración: por debajo de esto un clip se percibe como parpadeo, no como toma. Al
+// fragmentar por cambio de sujeto aparecen fragmentos muy cortos ("Y Piqué calló."), así que
+// hace falta la guarda. Solo se fusiona con un vecino DEL MISMO FAMOSO: un clip corto del
+// famoso correcto es mejor que uno largo del equivocado, que es justo el bug que se arregló.
+const CLIP_MIN = 0.7;
 const RECORTE_INICIAL = 1; // segundos descartados al inicio de cada video fuente
 
 function cargarHistorial() {
@@ -39,6 +48,34 @@ function repartirTomas(duracion) {
   return Array(n).fill(duracion / n);
 }
 
+// Agrupa fragmentos consecutivos en BLOQUES de clip, fusionando los que quedarían por debajo de
+// CLIP_MIN con un vecino del mismo famoso. El texto de los fragmentos no se toca: lo que se
+// fusiona es el corte visual, no la asignación.
+//
+// La suma de tiempos se conserva exactamente (cada tiempo cae en un bloque y solo uno), así que
+// la invariante "duración del video == duración del audio" sigue en pie. Y CLIP_MAX tampoco
+// corre riesgo: repartirTomas() parte después cualquier bloque que supere los 3 segundos.
+//
+// Devuelve: [{famoso, tiempo, indices: [idxParrafo, ...]}]
+function agruparParaClips(parrafos, tiempos) {
+  const bloques = [];
+  parrafos.forEach((p, idx) => {
+    const previo = bloques[bloques.length - 1];
+    const mismoFamoso = previo && previo.famoso === p.famoso;
+    // Fusionar si el nuevo es muy corto, o si el bloque previo se quedó corto y este lo puede
+    // completar. Sin la segunda condición, un fragmento corto que abre bloque (porque su
+    // anterior era de otro famoso) se quedaría corto para siempre.
+    const hayQueFusionar = mismoFamoso && (tiempos[idx] < CLIP_MIN || previo.tiempo < CLIP_MIN);
+    if (hayQueFusionar) {
+      previo.tiempo += tiempos[idx];
+      previo.indices.push(idx);
+    } else {
+      bloques.push({ famoso: p.famoso, tiempo: tiempos[idx], indices: [idx] });
+    }
+  });
+  return bloques;
+}
+
 // parrafos: [{texto, famoso, caracteres}] en orden narrativo
 // duracionAudio: segundos reales de la locución (ffprobe)
 // inventario: {famoso: [{id, name, duracion|null}]}
@@ -48,14 +85,20 @@ function planificarClips(parrafos, duracionAudio, inventario) {
   const totalChars = parrafos.reduce((s, p) => s + p.caracteres, 0);
   if (!totalChars) throw new Error('Párrafos sin caracteres');
 
-  // 1. Línea de tiempo: cada párrafo → su tiempo → sus tomas
+  // 1. Línea de tiempo: cada párrafo → su tiempo → agrupar los muy cortos → sus tomas
+  const tiempos = parrafos.map(p => duracionAudio * (p.caracteres / totalChars));
+  const bloques = agruparParaClips(parrafos, tiempos);
+  const fusionados = parrafos.length - bloques.length;
+  if (fusionados > 0) {
+    console.log(`  🔗 ${fusionados} fragmento(s) bajo ${CLIP_MIN}s fusionados con su vecino del mismo famoso`);
+  }
+
   const requerimientos = [];
-  parrafos.forEach((p, idx) => {
-    const tiempoParrafo = duracionAudio * (p.caracteres / totalChars);
-    for (const dur of repartirTomas(tiempoParrafo)) {
-      requerimientos.push({ famoso: p.famoso, dur, parrafoIdx: idx });
+  for (const bloque of bloques) {
+    for (const dur of repartirTomas(bloque.tiempo)) {
+      requerimientos.push({ famoso: bloque.famoso, dur, parrafoIdx: bloque.indices[0] });
     }
-  });
+  }
 
   // 2. Selección de videos por famoso (rotación sin repetir + secuencia nueva)
   const colas = {}; // famoso -> cola de videos elegidos (uno por toma requerida)
@@ -151,4 +194,4 @@ function planificarClips(parrafos, duracionAudio, inventario) {
   return plan;
 }
 
-module.exports = { planificarClips, repartirTomas, CLIP_MAX, RECORTE_INICIAL };
+module.exports = { planificarClips, repartirTomas, agruparParaClips, CLIP_MAX, CLIP_MIN, RECORTE_INICIAL };

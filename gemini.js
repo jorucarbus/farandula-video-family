@@ -373,52 +373,142 @@ function getAngleDescription(angle) {
   return descripciones[angle] || 'Enfoque libre.';
 }
 
-// ETAPA 3 v2: dividir el guion en PÁRRAFOS narrativos y asignar carpeta de famoso a cada uno.
-// El tiempo en pantalla de cada párrafo se calcula después por porcentaje de caracteres.
-async function fragmentarGuionParrafos(script, carpetas) {
-  try {
-    const prompt = `Rol: Editor de contenido para videos de farándula en TikTok, especializado en ritmo de "corte rápido".
+// Comprueba que los fragmentos, pegados en orden, reconstruyan el guion original.
+// Por qué importa: el tiempo en pantalla de cada clip sale de `caracteres_fragmento /
+// caracteres_totales` (seleccion.js). Si Gemini recorta, reescribe o inventa palabras, los
+// porcentajes cambian y se corren los tiempos de TODOS los clips — el video se desincroniza de
+// la locución sin que nada falle a la vista. Antes nadie lo comprobaba: la regla del prompt lo
+// pedía y se confiaba. Esto lo vuelve visible.
+function verificarReconstruccion(script, parrafos) {
+  // Normalización deliberadamente laxa: solo espacios en blanco. NO se normalizan tildes,
+  // mayúsculas ni puntuación a propósito — si Gemini cambia eso, es un cambio real del texto
+  // que hay que ver, no ruido que tapar.
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const original = norm(script);
+  const reconstruido = norm(parrafos.map(p => p.texto).join(' '));
 
-TAREA: Divide el guion en ORACIONES individuales (una oración = un fragmento) y asigna a cada una la carpeta del famoso más relevante según de quién se habla en ese momento.
+  if (original === reconstruido) return { ok: true };
+
+  // Primer punto donde divergen, para saber DÓNDE se rompió sin leer los dos textos enteros
+  let i = 0;
+  while (i < original.length && i < reconstruido.length && original[i] === reconstruido[i]) i++;
+  const contexto = original.slice(Math.max(0, i - 40), i + 40);
+
+  const desvio = reconstruido.length - original.length;
+  const mensaje = `Los fragmentos NO reconstruyen el guion (${desvio > 0 ? '+' : ''}${desvio} caracteres). ` +
+    `Divergen cerca de: "…${contexto}…". Los tiempos de los clips van a estar corridos.`;
+
+  return { ok: false, mensaje, desvio, posicion: i };
+}
+
+// Fragmentación POR GUION: los cortes salen del texto y del cambio de sujeto.
+// Es la única implementación viva hoy. Ver FRAGMENTADORES abajo para la puerta abierta.
+async function fragmentarPorGuion(script, carpetas) {
+  const prompt = `Rol: Editor de contenido para videos de farándula en TikTok, especializado en ritmo de "corte rápido".
+
+TAREA: Divide el guion en fragmentos y asigna a cada uno la carpeta del famoso del que se habla EN ESE FRAGMENTO.
+
+Principio que manda sobre todo lo demás: en pantalla se ve el famoso asignado al fragmento
+mientras se escucha ese fragmento. Si el texto pasa a hablar de otra persona y el fragmento no
+se parte, se queda en pantalla la persona equivocada. Evitar eso es la prioridad.
 
 REGLAS:
-1. Cada fragmento es EXACTAMENTE una oración completa (delimitada por punto, signo de exclamación o interrogación). No agrupes varias oraciones en un fragmento, no dejes palabras sueltas.
-2. Si una oración es muy larga (más de ~140 caracteres) y tiene una pausa natural fuerte (coma antes de conector como "pero", "y", "porque", "mientras", "aunque"), puedes partirla en dos fragmentos en ese punto — cada mitad debe conservar sentido propio.
-3. El texto de los fragmentos unidos debe reconstruir el guion COMPLETO, en el mismo orden, sin omitir, agregar ni cambiar palabras.
-4. Usa el nombre EXACTO de la carpeta (respeta mayúsculas y guiones bajos).
-5. Si un fragmento habla de dos famosos, elige al que tenga más peso en ese fragmento.
-6. Responde ÚNICAMENTE con un array JSON válido: [{"parrafo": "texto", "carpeta": "Nombre_Carpeta"}]
+1. El punto de partida es una oración completa por fragmento (delimitada por punto, signo de
+   exclamación o interrogación). No agrupes varias oraciones en un fragmento.
+2. OBLIGATORIO: si DENTRO de una misma oración el sujeto del que se habla cambia de un famoso a
+   otro, PARTE la oración en ese punto, sin importar lo corta que sea. Corta justo antes del
+   conector o de la coma que separa a los dos sujetos. Esto no es opcional y no depende de la
+   longitud.
+   Ejemplo: "Shakira apareció radiante en la alfombra roja, pero Piqué prefirió quedarse en casa."
+   → DOS fragmentos:
+      "Shakira apareció radiante en la alfombra roja," (carpeta de Shakira)
+      "pero Piqué prefirió quedarse en casa." (carpeta de Piqué)
+3. Aparte de la regla 2: si una oración es muy larga (más de ~140 caracteres) y tiene una pausa
+   natural fuerte (coma antes de "pero", "y", "porque", "mientras", "aunque"), puedes partirla
+   ahí aunque el sujeto no cambie.
+4. El texto de los fragmentos unidos debe reconstruir el guion COMPLETO, en el mismo orden, sin
+   omitir, agregar ni cambiar NI UNA palabra. Se verifica automáticamente.
+5. Usa el nombre EXACTO de la carpeta (respeta mayúsculas y guiones bajos).
+6. Cada fragmento debe tener UN SOLO famoso. Si después de aplicar la regla 2 un fragmento
+   todavía nombra a dos, elige a quien sea el SUJETO de la acción, no al mencionado de pasada.
+   (Ej.: "Shakira habló del divorcio con Piqué" → el sujeto es Shakira.)
+7. Responde ÚNICAMENTE con un array JSON válido: [{"parrafo": "texto", "carpeta": "Nombre_Carpeta"}]
 
 Carpetas disponibles: ${carpetas.join(', ')}`;
 
-    const lista = await llamarJSON(prompt, `Guion:\n\n${script}`);
-    if (!Array.isArray(lista) || lista.length === 0) {
-      throw new Error('Gemini no devolvió párrafos');
-    }
+  const lista = await llamarJSON(prompt, `Guion:\n\n${script}`);
+  if (!Array.isArray(lista) || lista.length === 0) {
+    throw new Error('Gemini no devolvió párrafos');
+  }
 
-    const setCarpetas = new Set(carpetas);
-    const parrafos = lista
-      .map(item => {
-        const texto = (item.parrafo || '').trim();
-        let famoso = (item.carpeta || '').trim();
-        // Si el nombre no es exacto, buscar la carpeta más parecida
-        if (!setCarpetas.has(famoso)) {
-          const encontrada = carpetas.find(c =>
-            c.toLowerCase() === famoso.toLowerCase() ||
-            c.toLowerCase().includes(famoso.toLowerCase()) ||
-            famoso.toLowerCase().includes(c.toLowerCase())
-          );
-          if (encontrada) famoso = encontrada;
-        }
-        return { texto, famoso, caracteres: texto.length };
-      })
-      .filter(p => p.texto && p.famoso);
+  const setCarpetas = new Set(carpetas);
+  const parrafos = lista
+    .map(item => {
+      const texto = (item.parrafo || '').trim();
+      let famoso = (item.carpeta || '').trim();
+      // Si el nombre no es exacto, buscar la carpeta más parecida
+      if (!setCarpetas.has(famoso)) {
+        const encontrada = carpetas.find(c =>
+          c.toLowerCase() === famoso.toLowerCase() ||
+          c.toLowerCase().includes(famoso.toLowerCase()) ||
+          famoso.toLowerCase().includes(c.toLowerCase())
+        );
+        if (encontrada) famoso = encontrada;
+      }
+      return { texto, famoso, caracteres: texto.length };
+    })
+    .filter(p => p.texto && p.famoso);
 
-    const totalChars = parrafos.reduce((s, p) => s + p.caracteres, 0);
-    console.log(`  📄 ${parrafos.length} párrafos, ${totalChars} caracteres totales`);
-    return parrafos;
+  const totalChars = parrafos.reduce((s, p) => s + p.caracteres, 0);
+  console.log(`  📄 ${parrafos.length} fragmentos, ${totalChars} caracteres totales`);
+
+  const verif = verificarReconstruccion(script, parrafos);
+  if (!verif.ok) console.warn(`  ⚠️ ${verif.mensaje}`);
+  // Propiedad del array, no un elemento: JSON.stringify de un array IGNORA las propiedades, así
+  // que esto no contamina fragments.json ni lo que se guarda en el job. Es solo para que
+  // server.js pueda avisarle al usuario en la misma respuesta.
+  Object.defineProperty(parrafos, 'verificacion', { value: verif, enumerable: false });
+
+  return parrafos;
+}
+
+// Puerta abierta (plan maestro, Fase 2): la fragmentación queda detrás de una interfaz aunque
+// hoy solo exista una implementación. La futura `ritmo` toma la misma duración de locución pero
+// hace caer los cortes en el PULSO de la música elegida. No se construye ahora: necesita una
+// grilla de onsets de la pista y encajar los cortes en ella sin romper las dos invariantes
+// (la suma sigue siendo la duración del audio, ningún clip pasa de 3s), y como los pulsos
+// pueden estar más separados que eso habría que subdividir compases. Dejar el nombre ahora
+// cuesta cero; reabrirlo después obliga a tocar todo lo que dependa de la forma del plan.
+const FRAGMENTADORES = {
+  guion: fragmentarPorGuion,
+  // ritmo: fragmentarPorRitmo,  // futuro
+};
+
+// ETAPA 3 v2: dividir el guion en fragmentos y asignar carpeta de famoso a cada uno.
+// El tiempo en pantalla de cada fragmento se calcula después por porcentaje de caracteres.
+async function fragmentarGuionParrafos(script, carpetas, modo = 'guion') {
+  const fragmentar = FRAGMENTADORES[modo];
+  if (!fragmentar) throw new Error(`Modo de fragmentación desconocido: ${modo}`);
+  try {
+    return await fragmentar(script, carpetas);
   } catch (error) {
     throw new Error(`Error fragmentando en párrafos: ${error.message}`);
+  }
+}
+
+// ETAPA 4: Agregar Marcas ElevenLabs
+async function agregarMarcas(guionFragmentado) {
+  try {
+    const guionText = guionFragmentado
+      .map(f => `${f.famoso}: ${f.texto}`)
+      .join('\n');
+
+    const userMessage = `Procesa este guion fragmentado y agrega las etiquetas de actuación:\n\n${guionText}`;
+    const response = await callGemini(PROMPTS.marcas, userMessage);
+
+    return response.trim();
+  } catch (error) {
+    throw new Error(`Error agregando marcas: ${error.message}`);
   }
 }
 
@@ -458,5 +548,6 @@ module.exports = {
   procesarLectura,
   generarGuion,
   fragmentarGuionParrafos,
+  verificarReconstruccion,
   generarNombreArchivo,
 };
