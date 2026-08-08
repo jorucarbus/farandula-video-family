@@ -67,10 +67,10 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="source-input">Ingresa aquí:</label>
+                    <label for="source-input" id="source-input-label">Ingresa aquí:</label>
                     <textarea id="source-input" placeholder="Pega un link de noticia, YouTube, TikTok o Instagram — o texto directo" rows="4"></textarea>
                     <p style="color:#666;font-size:0.82rem;margin-top:6px;">
-                        Los videos de TikTok/IG se descargan y Gemini los <strong>ve</strong> (imagen + audio). YouTube lo lee directo.
+                        De los videos solo importa lo que se DICE — nunca gestos ni imagen. YouTube intenta subtítulos primero; si no hay, audio; el video completo es el último recurso.
                     </p>
                 </div>
 
@@ -86,6 +86,11 @@
                 <button class="btn btn-primary" id="btn-read" onclick="handleRead()">
                     <span class="icon-slot" data-icon="bookOpen"></span> Leer y procesar
                 </button>
+
+                <div class="hidden" id="fuentes-lista-wrap" style="margin-top:10px;">
+                    <p style="color:#666;font-size:0.82rem;margin-bottom:4px;"><strong>Fuentes de esta noticia (<span id="fuentes-contador">0/3</span>):</strong></p>
+                    <ul id="fuentes-lista" style="list-style:none;display:flex;flex-direction:column;gap:6px;"></ul>
+                </div>
             </div>
 
             <div class="form-section" id="script-section" data-status="locked">

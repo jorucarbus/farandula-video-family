@@ -34,7 +34,8 @@ function setModo(modo) {
     document.getElementById('modo-selector').dataset.modo = modo;
     document.getElementById('producto-final-label').textContent = modo === 'video' ? 'Video' : 'Insumos';
     document.getElementById('btn-generate-video-label').textContent = cfg().finalLabel;
-    state = { jobId: null, sourceData: null, selectedAngle: null, guion: null, fragments: null, audioToken: null, fuente: null, sesgo: 'neutral' };
+    state = { jobId: null, sourceData: null, selectedAngle: null, guion: null, fragments: null, audioToken: null, fuentes: [], sesgo: 'neutral' };
+    renderFuentesLista();
     document.getElementById('lectura-section').classList.add('hidden');
     hideProgress();
     lockFrom('script-section');
@@ -77,9 +78,10 @@ let state = {
     fragments: null,
     carpetas: [],
     audioToken: null,
-    fuente: null,
+    fuentes: [],    // [{type, content, tipoReal, fuenteResumen}, ...] — hasta MAX_FUENTES por noticia
     sesgo: 'neutral',
 };
+const MAX_FUENTES = 3;
 
 const STEP_BADGE = {
     locked: { icon: 'hourglass', texto: 'Pendiente' },
@@ -208,7 +210,7 @@ async function apiCall(endpoint, method = 'GET', data = null) {
     return response.json();
 }
 
-// PASO 1: Leer fuente
+// PASO 1: Leer fuente (primera) o agregar otra (hasta MAX_FUENTES) sobre la misma noticia.
 async function handleRead() {
     const sourceType = document.getElementById('source-type').value;
     const sourceInput = document.getElementById('source-input').value;
@@ -226,9 +228,45 @@ async function handleRead() {
     }
 }
 
+// Pinta la lista de fuentes ya agregadas (Paso 1) y ajusta el botón/label según cuántas hay.
+function renderFuentesLista() {
+    const wrap = document.getElementById('fuentes-lista-wrap');
+    const lista = document.getElementById('fuentes-lista');
+    const contador = document.getElementById('fuentes-contador');
+    const btn = document.getElementById('btn-read');
+    const label = document.getElementById('source-input-label');
+
+    contador.textContent = `${state.fuentes.length}/${MAX_FUENTES}`;
+    lista.innerHTML = state.fuentes.map((f, i) => `
+        <li>
+            <span class="fuente-num">${i + 1}.</span>
+            <span class="fuente-tipo">${f.tipoReal || f.type}</span>
+            <span>${f.fuenteResumen || f.content.slice(0, 60)}</span>
+        </li>
+    `).join('');
+    wrap.classList.toggle('hidden', state.fuentes.length === 0);
+
+    if (state.fuentes.length === 0) {
+        btn.innerHTML = `${icon('bookOpen')} Leer y procesar`;
+        label.textContent = 'Ingresa aquí:';
+        document.getElementById('source-input').disabled = false;
+    } else if (state.fuentes.length < MAX_FUENTES) {
+        btn.innerHTML = `${icon('bookOpen')} Agregar otra fuente sobre la misma noticia`;
+        label.textContent = `Fuente ${state.fuentes.length + 1} de ${MAX_FUENTES} (opcional):`;
+        document.getElementById('source-input').disabled = false;
+    } else {
+        btn.innerHTML = `${icon('check')} Máximo de ${MAX_FUENTES} fuentes alcanzado`;
+        setButtonDisabled('btn-read', true);
+        label.textContent = 'Ingresa aquí:';
+        document.getElementById('source-input').disabled = true;
+    }
+}
+
+// Sin jobId crea el job; con jobId acumula una fuente más sobre la MISMA noticia (Fase 4) —
+// cada llamada solo procesa la fuente nueva, nunca vuelve a tocar las anteriores.
 async function leerFuente(sourceType, sourceInput, sesgo) {
+    const esPrimera = !state.jobId;
     try {
-        state.fuente = { type: sourceType, content: sourceInput };
         state.sesgo = sesgo;
         state.selectedAngle = null;
         state.guion = null;
@@ -236,13 +274,16 @@ async function leerFuente(sourceType, sourceInput, sesgo) {
         state.audioToken = null;
         lockFrom('script-section');
 
-        showProgress(`${icon('bookOpen')} Leyendo fuente...`);
-        log(`📖 Iniciando lectura (sesgo: ${sesgo})...`);
+        showProgress(`${icon('bookOpen')} ${esPrimera ? 'Leyendo fuente' : 'Agregando fuente'}...`);
+        log(`📖 ${esPrimera ? 'Iniciando lectura' : 'Agregando fuente'} (sesgo: ${sesgo})...`);
         updateProgress(10);
 
-        const result = await apiCall('/read', 'POST', { type: sourceType, content: sourceInput, sesgo });
+        const result = await apiCall('/read', 'POST', {
+            type: sourceType, content: sourceInput, sesgo, jobId: state.jobId || undefined,
+        });
 
-        log('✅ Lectura completada');
+        log(esPrimera ? '✅ Lectura completada' : `✅ Fuente ${result.numFuentes}/${result.maxFuentes} agregada (${result.tipoReal})`);
+        state.fuentes.push({ type: sourceType, content: sourceInput, tipoReal: result.tipoReal, fuenteResumen: result.fuenteResumen });
         state.sourceData = result;
         state.jobId = result.jobId;
         updateProgress(30);
@@ -251,11 +292,13 @@ async function leerFuente(sourceType, sourceInput, sesgo) {
         document.getElementById('res-descripcion').textContent = result.descripcion;
         document.getElementById('res-cronica').textContent = result.cronica;
         revealLectura();
+        renderFuentesLista();
+        document.getElementById('source-input').value = '';
 
         hideProgress();
         setStepStatus('fuente-section', 'done');
         setStepStatus('script-section', 'active');
-        log('➡️ Selecciona un ángulo para continuar');
+        log('➡️ Agrega otra fuente si querés, o selecciona un ángulo para continuar');
     } catch (error) {
         mostrarError(`Error en lectura: ${error.message}`, () => leerFuente(sourceType, sourceInput, sesgo), 'fuente-section');
     }

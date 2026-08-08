@@ -638,3 +638,17 @@ footer {
     .form-section { padding: 18px; }
     .angles-grid { grid-template-columns: 1fr; }
 }
+
+/* Lista de fuentes acumuladas (Paso 1, multifuente — Fase 4) */
+#fuentes-lista li {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    background: #f7f7f7;
+    border: 2px solid var(--black);
+    border-radius: 8px;
+    font-size: 0.8rem;
+}
+#fuentes-lista .fuente-num { font-weight: 900; }
+#fuentes-lista .fuente-tipo { color: var(--purple); font-weight: 800; }

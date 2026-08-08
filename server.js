@@ -94,49 +94,138 @@ function crearJobDir(jobId) {
   return dir;
 }
 
-// ==================== PASO 1: LECTURA ====================
-app.post('/api/read', async (req, res) => {
-  try {
-    const { type, content, sesgo } = req.body;
-    if (!type || !content) throw new Error('Faltan type o content');
+// Decide CÓMO leer una fuente y devuelve su acta ya extraída (Fase 4 del plan maestro:
+// multifuente + solo audio). El orden de intentos SIEMPRE prioriza lo más barato — de los
+// videos no importa nada visual, así que "ver" el video queda como último recurso si todo lo
+// demás falla, nunca como default. Cada escalón que falla cae al siguiente en vez de abortar.
+async function extraerActaDeFuente(type, content) {
+  if (type !== 'link' && type !== 'video') {
+    const acta = await gemini.extraerActa(type, content);
+    return { acta, tipoReal: type };
+  }
 
-    const sesgoElegido = ['favor', 'contra', 'neutral'].includes(sesgo) ? sesgo : 'neutral';
-    const contenido = content.trim();
-    let result;
-
-    if (type === 'link' || type === 'video') {
-      if (fuentes.esYoutube(contenido)) {
-        try {
-          result = await gemini.procesarLectura('youtube', contenido, sesgoElegido);
-        } catch (e) {
-          const videoPath = await fuentes.descargarVideo(contenido);
-          try {
-            result = await gemini.procesarLectura('video', videoPath, sesgoElegido);
-          } finally {
-            try { fs.unlinkSync(videoPath); } catch {}
-          }
-        }
-      } else if (fuentes.esVideoSocial(contenido) || type === 'video') {
-        const videoPath = await fuentes.descargarVideo(contenido);
-        try {
-          result = await gemini.procesarLectura('video', videoPath, sesgoElegido);
-        } finally {
-          try { fs.unlinkSync(videoPath); } catch {}
-        }
-      } else {
-        const texto = await fuentes.extraerTextoWeb(contenido);
-        result = await gemini.procesarLectura('web', texto, sesgoElegido);
+  if (fuentes.esYoutube(content)) {
+    // 1) Transcripción: texto puro, cero tokens de audio/video en Gemini.
+    try {
+      const transcripcion = await fuentes.obtenerTranscripcionYoutube(content);
+      if (transcripcion) {
+        console.log('  📄 Transcripción de YouTube obtenida (sin tocar audio ni video)');
+        const acta = await gemini.extraerActa('transcripcion', transcripcion);
+        return { acta, tipoReal: 'youtube-transcripcion' };
       }
-    } else {
-      result = await gemini.procesarLectura(type, content, sesgoElegido);
+    } catch (e) {
+      console.warn(`  ⚠️ Transcripción de YouTube falló (${e.message}); probando audio...`);
     }
 
-    const jobId = crypto.randomBytes(8).toString('hex');
-    const job = {
-      jobId,
-      userId: req.user.userId,
-      paso: 'lectura',
-      fuente: { type, content, sesgo: sesgoElegido },
+    // 2) Audio solo: ~1/8 del costo de mandar el video completo.
+    try {
+      const audioPath = await fuentes.descargarAudio(content);
+      try {
+        const acta = await gemini.extraerActa('audio', audioPath);
+        return { acta, tipoReal: 'youtube-audio' };
+      } finally {
+        try { fs.unlinkSync(audioPath); } catch {}
+      }
+    } catch (e) {
+      console.warn(`  ⚠️ Audio de YouTube falló (${e.message}); probando lectura directa...`);
+    }
+
+    // 3) Gemini lee la URL directo (sin yt-dlp) — más caro, pero robusto.
+    try {
+      const acta = await gemini.extraerActa('youtube', content);
+      return { acta, tipoReal: 'youtube-directo' };
+    } catch (e) {
+      console.warn(`  ⚠️ Lectura directa falló (${e.message}); último recurso: descargar el video...`);
+    }
+
+    // 4) Último recurso: video completo.
+    const videoPath = await fuentes.descargarVideo(content);
+    try {
+      const acta = await gemini.extraerActa('video', videoPath);
+      return { acta, tipoReal: 'youtube-video' };
+    } finally {
+      try { fs.unlinkSync(videoPath); } catch {}
+    }
+  }
+
+  if (fuentes.esVideoSocial(content) || type === 'video') {
+    try {
+      const audioPath = await fuentes.descargarAudio(content);
+      try {
+        const acta = await gemini.extraerActa('audio', audioPath);
+        return { acta, tipoReal: 'social-audio' };
+      } finally {
+        try { fs.unlinkSync(audioPath); } catch {}
+      }
+    } catch (e) {
+      console.warn(`  ⚠️ Audio-only falló (${e.message}); descargando video completo...`);
+      const videoPath = await fuentes.descargarVideo(content);
+      try {
+        const acta = await gemini.extraerActa('video', videoPath);
+        return { acta, tipoReal: 'social-video' };
+      } finally {
+        try { fs.unlinkSync(videoPath); } catch {}
+      }
+    }
+  }
+
+  const texto = await fuentes.extraerTextoWeb(content);
+  const acta = await gemini.extraerActa('web', texto);
+  return { acta, tipoReal: 'web' };
+}
+
+// ==================== PASO 1: LECTURA (multifuente, hasta 3) ====================
+app.post('/api/read', async (req, res) => {
+  try {
+    const { type, content, sesgo, jobId: jobIdExistente } = req.body;
+    if (!type || !content) throw new Error('Faltan type o content');
+
+    let job = jobIdExistente ? jobs.get(jobIdExistente) : null;
+    if (jobIdExistente && (!job || job.userId !== req.user.userId)) {
+      return res.status(404).json({ error: 'Job no encontrado' });
+    }
+
+    const fuentesActuales = job?.fuentes || [];
+    const MAX_FUENTES = 3;
+    if (fuentesActuales.length >= MAX_FUENTES) {
+      return res.status(400).json({ error: `Ya hay ${MAX_FUENTES} fuentes (máximo). Quita una para agregar otra.` });
+    }
+
+    const sesgoElegido = ['favor', 'contra', 'neutral'].includes(sesgo) ? sesgo : (job?.sesgo || 'neutral');
+    const contenido = content.trim();
+
+    const { acta, tipoReal } = await extraerActaDeFuente(type, contenido);
+    const nuevaFuente = { type, content: contenido, tipoReal, acta };
+    const todasLasFuentes = [...fuentesActuales, nuevaFuente];
+
+    const result = await gemini.sintetizarCronica(todasLasFuentes.map(f => f.acta), sesgoElegido);
+
+    if (!job) {
+      const jobId = crypto.randomBytes(8).toString('hex');
+      job = {
+        jobId,
+        userId: req.user.userId,
+        paso: 'lectura',
+        sesgo: sesgoElegido,
+        fuentes: todasLasFuentes,
+        guion: null,
+        fragments: null,
+        carpetas: null,
+        audioToken: null,
+        duracion: null,
+      };
+      crearJobDir(jobId);
+      await db.addJobToHistory(req.user.userId, jobId, null, null, null, 'lectura');
+    }
+    Object.assign(job, { sesgo: sesgoElegido, fuentes: todasLasFuentes, ...result });
+    jobs.set(job.jobId, job);
+
+    res.json({
+      jobId: job.jobId,
+      numFuentes: todasLasFuentes.length,
+      maxFuentes: MAX_FUENTES,
+      fuenteResumen: acta.fuenteResumen,
+      tipoReal,
       cronica: result.cronica,
       titulo: result.titulo,
       descripcion: result.descripcion,
@@ -144,16 +233,29 @@ app.post('/api/read', async (req, res) => {
       secundario: result.secundario,
       accion: result.accion,
       nombreCorto: result.nombreCorto,
-      guion: null,
-      fragments: null,
-      carpetas: null,
-      audioToken: null,
-      duracion: null,
-    };
-    jobs.set(jobId, job);
-    crearJobDir(jobId);
+    });
+  } catch (error) {
+    console.error('Error en /api/read:', error.message);
+    res.status(400).json({ error: error.message });
+  }
+});
 
-    await db.addJobToHistory(req.user.userId, jobId, null, null, null, 'lectura');
+// Re-sintetizar con OTRO sesgo, sin re-descargar ni re-procesar ninguna fuente — las actas ya
+// cacheadas en el job son sesgo-independientes (Fase 4 del plan maestro).
+app.post('/api/resintetizar', async (req, res) => {
+  try {
+    const { jobId, sesgo } = req.body;
+    if (!jobId) return res.status(400).json({ error: 'Falta jobId' });
+    const job = jobs.get(jobId);
+    if (!job || job.userId !== req.user.userId) return res.status(404).json({ error: 'Job no encontrado' });
+    if (!job.fuentes || job.fuentes.length === 0) {
+      return res.status(400).json({ error: 'Este job no tiene fuentes cacheadas — hay que releer la fuente' });
+    }
+
+    const sesgoElegido = ['favor', 'contra', 'neutral'].includes(sesgo) ? sesgo : 'neutral';
+    const result = await gemini.sintetizarCronica(job.fuentes.map(f => f.acta), sesgoElegido);
+    Object.assign(job, { sesgo: sesgoElegido, ...result });
+    jobs.set(jobId, job);
 
     res.json({
       jobId,
@@ -161,10 +263,12 @@ app.post('/api/read', async (req, res) => {
       titulo: result.titulo,
       descripcion: result.descripcion,
       protagonista: result.protagonista,
+      secundario: result.secundario,
+      accion: result.accion,
       nombreCorto: result.nombreCorto,
     });
   } catch (error) {
-    console.error('Error en /api/read:', error.message);
+    console.error('Error en /api/resintetizar:', error.message);
     res.status(400).json({ error: error.message });
   }
 });

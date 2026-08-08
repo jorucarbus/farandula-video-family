@@ -27,7 +27,8 @@ const CADENAS = {
 // permite confirmar en producción qué modelo atendió qué.
 // (Sin `marcas`: esta versión no usa ElevenLabs, así que no hay prosodia que etiquetar.)
 const TAREAS = {
-  lectura:       { nombre: 'lectura',       cadena: CADENAS.creativo },
+  acta:          { nombre: 'acta',          cadena: CADENAS.creativo },
+  lectura:       { nombre: 'síntesis',      cadena: CADENAS.creativo },
   guion:         { nombre: 'guion',         cadena: CADENAS.creativo },
   fragmentacion: { nombre: 'fragmentación', cadena: CADENAS.mecanico },
   nombreArchivo: { nombre: 'nombre',        cadena: CADENAS.mecanico },
@@ -35,9 +36,35 @@ const TAREAS = {
 
 // Prompts maestros
 const PROMPTS = {
+  // ETAPA 1a (extracción): hechos neutrales, sin sesgo y sin narrativa — eso se aplica después,
+  // en `lectura` (síntesis). Al ser sesgo-independiente, una acta ya extraída sirve para
+  // CUALQUIER sesgo que se pida más tarde sin volver a tocar la fuente original (multifuente,
+  // Fase 4 del plan maestro).
+  acta: `Rol: Asistente de investigación para contenido de farándula en TikTok.
+
+Tarea: procesa el contenido que te doy (texto, página web, audio o video) y extrae los HECHOS —
+no redactes con estilo todavía, eso es un paso aparte y lo hace otro prompt. De audio o video,
+transcribe o resume SOLO lo que se DICE: nunca describas gestos, expresiones, ropa, edición ni
+nada visual — eso no importa para este trabajo, ni siquiera si el video lo muestra.
+
+Responde ÚNICAMENTE con un objeto JSON válido (sin markdown, sin bloques de código):
+{
+  "hechos": "Los hechos concretos mencionados, en prosa breve y neutral: quién, qué, cuándo, dónde, y cualquier cita textual relevante. Sin narrativa, sin opinión, sin adornos — es una nota de investigación, no un artículo.",
+  "personas": ["Nombre del famoso principal", "Nombre del segundo si lo hay"],
+  "fuenteResumen": "Una frase corta que describa de qué trata ESTA fuente en particular (sirve para diferenciarla si el usuario agrega más de una sobre la misma noticia)."
+}`,
+
+  // ETAPA 1b (síntesis): recibe una o más actas YA EXTRAÍDAS (texto, nunca audio/video — por
+  // eso esta llamada es barata) y las combina en una sola crónica. Acá SÍ se aplica el sesgo.
   lectura: `Rol: Periodista de élite, experto en storytelling digital, narrativa transmedia y análisis de tendencias en redes sociales. Tu estilo es audaz, dinámico y profundamente analítico.
 
-Tarea: Procesar el contenido que te proporcione (texto, página web, video o audio) y responder ÚNICAMENTE con un objeto JSON válido (sin markdown, sin bloques de código) con esta estructura exacta:
+Tarea: te doy uno o más ACTAS (hechos ya extraídos de una o varias fuentes sobre la MISMA
+noticia). Combínalas en una sola crónica coherente. Si hay más de una fuente, cruza los datos:
+usa lo que se complementa entre ellas, y si algo se contradice, prioriza el hecho más específico
+o menciona la discrepancia con naturalidad — no la ocultes ni la inventes resuelta.
+
+Responde ÚNICAMENTE con un objeto JSON válido (sin markdown, sin bloques de código) con esta
+estructura exacta:
 
 {
   "cronica": "Crónica periodística sobre el contenido. Centro de atención: el ángulo más viral, actual o disruptivo. Técnicas de storytelling (inicio impactante, desarrollo con tensión y ritmo, cierre memorable). Sin tono corporativo.",
@@ -308,38 +335,76 @@ async function subirArchivoGemini(filePath) {
   return { uri: info.uri, mimeType: info.mimeType || mimeType };
 }
 
-// ETAPA 1: Lectura
-// sourceType: 'texto' | 'web' (texto ya extraído) | 'youtube' (URL directa) |
-//             'audio' (ruta a MP3 local) | 'video' (ruta a video local, se sube a File API)
-// sesgo: 'favor' | 'contra' | 'neutral'
-async function procesarLectura(sourceType, content, sesgo = 'neutral') {
-  try {
-    const instruccionSesgo = SESGOS[sesgo] || SESGOS.neutral;
-    let userParts;
-    if (sourceType === 'youtube') {
-      // Gemini lee videos de YouTube directamente por URL
-      userParts = [
-        { fileData: { fileUri: content } },
-        { text: `Procesa este video de una noticia de farándula.\n\n${instruccionSesgo}` },
-      ];
-    } else if (sourceType === 'audio') {
-      // Audio descargado con yt-dlp (TikTok/Instagram), enviado inline en base64
-      const data = fs.readFileSync(content).toString('base64');
-      userParts = [
-        { inlineData: { mimeType: 'audio/mpeg', data } },
-        { text: `Procesa este audio de una noticia de farándula.\n\n${instruccionSesgo}` },
-      ];
-    } else if (sourceType === 'video') {
-      // Video descargado (TikTok/IG/etc): subirlo a la File API y que Gemini lo VEA (imagen + audio)
-      const archivo = await subirArchivoGemini(content);
-      userParts = [
-        { fileData: { fileUri: archivo.uri, mimeType: archivo.mimeType } },
-        { text: `Procesa este video de una noticia de farándula. Fíjate en lo que se dice Y en lo que se ve (gestos, reacciones, texto en pantalla, quién aparece).\n\n${instruccionSesgo}` },
-      ];
-    } else {
-      userParts = [{ text: `Procesa este contenido (${sourceType}):\n\n${content}\n\n${instruccionSesgo}` }];
-    }
+// Arma las partes de la llamada a Gemini según el tipo de fuente. Separado de extraerActa()
+// para reusarlo tal cual — el sesgo NO entra acá: la extracción es sesgo-independiente.
+//
+// sourceType: 'texto' | 'web' (texto ya extraído) | 'transcripcion' (subtítulos de YouTube,
+//             puro texto — la fuente MÁS barata posible) | 'youtube' (URL directa, Gemini lee
+//             el video completo) | 'audio' (ruta a MP3 local, ~1/8 del costo de 'video') |
+//             'video' (ruta a video local, se sube a File API — último recurso, solo si audio
+//             y transcripción fallan; ver Fase 4 del plan maestro: "de los videos no importa
+//             nada visual, solo lo que dicen").
+async function armarUserParts(sourceType, content) {
+  if (sourceType === 'youtube') {
+    return [
+      { fileData: { fileUri: content } },
+      { text: 'Procesa este video de una noticia de farándula.' },
+    ];
+  } else if (sourceType === 'transcripcion') {
+    // Subtítulos/transcripción ya extraídos con yt-dlp: texto plano, CERO tokens de audio o
+    // video. Es la fuente más barata que existe para YouTube — se intenta siempre primero.
+    return [{ text: `Transcripción de un video de YouTube, noticia de farándula:\n\n${content}` }];
+  } else if (sourceType === 'audio') {
+    // Audio descargado con yt-dlp (TikTok/Instagram/YouTube), enviado inline en base64.
+    // Sin imagen: ~32 tokens/s contra ~263 tokens/s de mandar el video completo.
+    const data = fs.readFileSync(content).toString('base64');
+    return [
+      { inlineData: { mimeType: 'audio/mpeg', data } },
+      { text: 'Procesa este audio de una noticia de farándula. Solo importa lo que se DICE.' },
+    ];
+  } else if (sourceType === 'video') {
+    // Último recurso: video completo (imagen + audio) por la File API. Se llega acá solo si
+    // transcripción y audio-only fallaron los dos.
+    const archivo = await subirArchivoGemini(content);
+    return [
+      { fileData: { fileUri: archivo.uri, mimeType: archivo.mimeType } },
+      { text: 'Procesa este video de una noticia de farándula. Solo importa lo que se DICE — ignora gestos, reacciones, ropa o texto en pantalla, eso no se usa para nada acá.' },
+    ];
+  } else {
+    return [{ text: `Procesa este contenido (${sourceType}):\n\n${content}` }];
+  }
+}
 
+// ETAPA 1a: extraer el ACTA de UNA fuente. Ver PROMPTS.acta — es sesgo-independiente, así que
+// una acta cacheada sirve para cualquier sesgo que se pida después sin volver a tocar la fuente.
+async function extraerActa(sourceType, content) {
+  try {
+    const userParts = await armarUserParts(sourceType, content);
+    const datos = await llamarJSON(PROMPTS.acta, userParts, TAREAS.acta);
+    return {
+      hechos: (datos.hechos || '').trim(),
+      personas: Array.isArray(datos.personas) ? datos.personas.filter(Boolean) : [],
+      fuenteResumen: (datos.fuenteResumen || '').trim(),
+    };
+  } catch (error) {
+    throw new Error(`Error extrayendo acta: ${error.message}`);
+  }
+}
+
+// ETAPA 1b: sintetizar UNA crónica a partir de una o más actas YA EXTRAÍDAS (multifuente, Fase
+// 4). Solo trabaja con texto — nunca vuelve a tocar audio/video/web — así que es la llamada
+// barata del par y la que se repite sola cuando el usuario pide "otro sesgo".
+async function sintetizarCronica(actas, sesgo = 'neutral') {
+  try {
+    if (!Array.isArray(actas) || actas.length === 0) {
+      throw new Error('No hay actas para sintetizar');
+    }
+    const instruccionSesgo = SESGOS[sesgo] || SESGOS.neutral;
+    const bloqueActas = actas.length === 1
+      ? actas[0].hechos
+      : actas.map((a, i) => `Fuente ${i + 1}${a.fuenteResumen ? ` (${a.fuenteResumen})` : ''}:\n${a.hechos}`).join('\n\n');
+
+    const userParts = [{ text: `${bloqueActas}\n\n${instruccionSesgo}` }];
     const datos = await llamarJSON(PROMPTS.lectura, userParts, TAREAS.lectura);
     const limpiar = (s) => (s || '').toString().replace(/[/\\:*?"<>|]/g, '').trim();
 
@@ -359,8 +424,14 @@ async function procesarLectura(sourceType, content, sesgo = 'neutral') {
       nombreCorto: nombreCorto || 'Video farandula',
     };
   } catch (error) {
-    throw new Error(`Error en lectura: ${error.message}`);
+    throw new Error(`Error en síntesis: ${error.message}`);
   }
+}
+
+// ETAPA 1 (compatibilidad + caso de una sola fuente): extrae + sintetiza en un solo paso.
+async function procesarLectura(sourceType, content, sesgo = 'neutral') {
+  const acta = await extraerActa(sourceType, content);
+  return sintetizarCronica([acta], sesgo);
 }
 
 // ETAPA 2: Generar Guion (7 ángulos)
@@ -584,6 +655,8 @@ function getAngleName(angle) {
 
 module.exports = {
   procesarLectura,
+  extraerActa,
+  sintetizarCronica,
   generarGuion,
   fragmentarGuionParrafos,
   verificarReconstruccion,
