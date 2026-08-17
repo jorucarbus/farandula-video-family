@@ -18,6 +18,8 @@ const drive = require('./drive');
 const auth = require('./auth');
 const db = require('./db');
 const cleanupCron = require('./cleanupCron');
+const portada = require('./portada');
+const fuentesCartel = require('./fuentesCartel');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -78,15 +80,126 @@ app.get('/api/me', auth.requireAuth, async (req, res) => {
   }
 });
 
-// Todo lo demás bajo /api requiere sesión
+// Todo lo demás bajo /api requiere sesión — EXCEPTO las rutas que sirven un archivo para un
+// <audio>/<video>/<img src="...">: esos tags no pueden mandar el header Authorization, así que
+// se protegen con el mismo criterio que ya usa farandula-video-generator (repo hermano): un
+// token/jobId aleatorio de `crypto.randomBytes` (16 hex = 64 bits) hace de "contraseña" en la URL
+// en vez del Bearer. No es un hueco nuevo: `/api/download-video/:jobId` y `/api/audio/:token` YA
+// dependían de esto para funcionar en el navegador — antes de este cambio el middleware de abajo
+// los bloqueaba con 401 en silencio (bug preexistente: <audio src="..."> nunca sonaba porque el
+// fetch del navegador no llevaba el Bearer). `/api/fuente/:clave` es una excepción aparte: sirve
+// un .ttf público del catálogo, sin datos de ningún usuario.
+const RUTAS_PUBLICAS_MEDIA = [/^\/audio\//, /^\/download-video\//, /^\/fuente\//, /^\/cartel\//, /^\/video-preview\//, /^\/portada-file\//];
 app.use('/api', (req, res, next) => {
   if (['/signup', '/login'].includes(req.path)) return next();
+  if (RUTAS_PUBLICAS_MEDIA.some(re => re.test(req.path))) return next();
   return auth.requireAuth(req, res, next);
 });
 
 // ==================== ESTADO EN MEMORIA ====================
 const jobs = new Map();           // jobId -> job
 const audiosPendientes = new Map(); // audioToken -> {path, duracion}
+
+// Guarda en disco el PNG del cartel que mandó el navegador (data URL "data:image/png;base64,...").
+// Portado de farandula-video-generator: el cartel se dibuja UNA vez en el navegador (canvas) y
+// este archivo es la ÚNICA versión — se superpone tal cual en el frame 0 del video y, después, en
+// el JPG de portada. Devuelve null si no vino cartel (el usuario no quiso) o si el dato no tiene
+// la forma esperada; el video sale igual, sin cartel.
+function guardarCartelPNG(dataUrl, jobId) {
+  if (typeof dataUrl !== 'string') return null;
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim());
+  if (!m) {
+    if (dataUrl.trim()) console.warn(`⚠️ [${jobId}] El cartel recibido no es un PNG en data URL, el video sale sin cartel`);
+    return null;
+  }
+  try {
+    const ruta = path.join(video.TEMP_DIR, `cartel_${jobId}.png`);
+    fs.writeFileSync(ruta, Buffer.from(m[1], 'base64'));
+    return ruta;
+  } catch (e) {
+    console.warn(`⚠️ [${jobId}] No se pudo guardar el cartel, el video sale sin él: ${e.message}`);
+    return null;
+  }
+}
+
+// Catálogo de tipografías del cartel de portada — la UI lo pide en vez de mantener una lista
+// duplicada.
+app.get('/api/fuentes-cartel', (req, res) => {
+  const fuentes = Object.entries(fuentesCartel.FUENTES).map(([clave, f]) => ({ clave, familia: f.familia }));
+  res.json({ fuentes, default: fuentesCartel.FUENTE_DEFAULT });
+});
+
+// Archivo .ttf de una tipografía del catálogo — el navegador lo carga con la API FontFace para
+// dibujar el cartel con la MISMA tipografía que después se hornea en el video (ver
+// public/app.js: asegurarFuenteCargada). Público: FontFace.load() no puede mandar headers.
+app.get('/api/fuente/:clave', async (req, res) => {
+  const fuente = fuentesCartel.FUENTES[req.params.clave];
+  if (!fuente) return res.status(404).json({ error: 'Tipografía desconocida' });
+  try {
+    const dir = await fuentesCartel.obtenerCarpetaFuentes(req.params.clave);
+    const ruta = dir && path.join(dir, fuente.archivo);
+    if (!ruta || !fs.existsSync(ruta)) {
+      return res.status(503).json({ error: `No se pudo obtener la tipografía "${fuente.familia}"` });
+    }
+    res.type('font/ttf');
+    res.sendFile(ruta);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PNG del cartel que el navegador dibujó en el Paso 6 y el server quemó en el frame 0 — se sirve
+// para que la UI lo muestre encima del fotograma elegido en el paso "elegir portada".
+app.get('/api/cartel/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job?.cartelPath || !fs.existsSync(job.cartelPath)) {
+    return res.status(404).json({ error: 'Cartel no disponible' });
+  }
+  res.sendFile(job.cartelPath);
+});
+
+// Video ya generado, para reproducirlo/scrubearlo en la UI (a diferencia de /download-video, que
+// fuerza la descarga con Content-Disposition: attachment).
+app.get('/api/video-preview/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job?.videoPath || !fs.existsSync(job.videoPath)) {
+    return res.status(404).json({ error: 'Video no disponible' });
+  }
+  res.sendFile(job.videoPath);
+});
+
+// Portada (miniatura): fotograma elegido por el usuario + EL MISMO PNG de cartel superpuesto —
+// el cartel se diseña UNA sola vez en el Paso 6 y se reusa tal cual acá (nunca se re-edita), para
+// que el JPG y el frame 0 del video sean idénticos. Se genera a partir de job.videoPath (el video
+// final ya guardado, no un preview aparte — family no tiene el problema de "el preview se limpió"
+// del repo principal porque el video final se queda en disco mientras el job exista).
+app.post('/api/portada', async (req, res) => {
+  const { jobId, timestamp } = req.body;
+  const job = jobs.get(jobId);
+  if (!job?.videoPath || !fs.existsSync(job.videoPath)) {
+    return res.status(404).json({ error: 'El video ya no está disponible, genéralo de nuevo' });
+  }
+  if (!job.cartelPath || !fs.existsSync(job.cartelPath)) {
+    return res.status(400).json({ error: 'No se diseñó un cartel en el Paso 6, no hay nada que superponer' });
+  }
+  try {
+    const token = crypto.randomBytes(16).toString('hex');
+    const ruta = await portada.generarPortada(job.videoPath, Number(timestamp) || 0, job.cartelPath, token);
+    job.portadaPath = ruta;
+    res.json({ portadaUrl: `/api/portada-file/${jobId}` });
+  } catch (e) {
+    console.error('Error generando portada:', e.message);
+    res.status(500).json({ error: `No se pudo generar la portada: ${e.message}` });
+  }
+});
+
+app.get('/api/portada-file/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job?.portadaPath || !fs.existsSync(job.portadaPath)) {
+    return res.status(404).json({ error: 'Portada no disponible' });
+  }
+  res.sendFile(job.portadaPath);
+});
 
 function crearJobDir(jobId) {
   const dir = path.join(INSUMOS_DIR, jobId);
@@ -389,7 +502,11 @@ app.get('/api/audio/:token', (req, res) => {
 });
 
 // ==================== Construye inventario + descarga clips necesarios ====================
-async function prepararClips(job) {
+// clipMax opcional: cuando /api/generate-video va a encadenar transiciones xfade, cada clip con
+// transición activa necesita `transicionDur` segundos EXTRA de metraje fuente para la cola de
+// mezcla (ver el comentario largo en video.js/renderizarConTransiciones) — sin bajar el tope acá,
+// duracion+cola se pasaría del límite legal de 3s por clip. Portado del repo principal.
+async function prepararClips(job, clipMax = undefined) {
   const famosos = [...new Set(job.fragments.map(f => f.famoso))];
   const inventario = {};
   for (const famoso of famosos) {
@@ -398,7 +515,9 @@ async function prepararClips(job) {
     inventario[famoso] = await drive.listarVideos(folderId);
   }
 
-  const plan = seleccion.planificarClips(job.fragments, job.duracion, inventario);
+  const plan = clipMax
+    ? seleccion.planificarClips(job.fragments, job.duracion, inventario, null, clipMax)
+    : seleccion.planificarClips(job.fragments, job.duracion, inventario);
 
   const archivos = {};
   for (const clip of plan) {
@@ -419,12 +538,32 @@ app.post('/api/generate-video', async (req, res) => {
     const audio = audiosPendientes.get(job.audioToken);
     if (!audio) throw new Error('No hay audio aprobado - sube un audio primero');
 
-    const { plan, archivos } = await prepararClips(job);
+    // Guarda contra un frontend viejo (cacheado antes de este cambio): manda `portadaTitular`
+    // —el campo que se usaba cuando el cartel se diseñaba con inputs sueltos sin canvas— y no
+    // `cartelPNG`. Sin esto el video saldría mudo de cartel sin ninguna pista de por qué.
+    if (efectos?.portadaTitular && !efectos?.cartelPNG) {
+      return res.status(400).json({
+        error: 'Tenés cargada una versión vieja de la página: recargala (Ctrl/Cmd + Shift + R) y volvé a generar.',
+      });
+    }
+
+    const transicionActiva = (efectos.transicion || 'ninguno') !== 'ninguno';
+    const transicionDur = Math.min(0.6, Math.max(0.1, Number(efectos.transicionDur) || 0.35));
+    const clipMaxEfectivo = transicionActiva ? Math.max(0.8, seleccion.CLIP_MAX - transicionDur) : undefined;
+    const { plan, archivos } = await prepararClips(job, clipMaxEfectivo);
+
+    // Cartel de portada (Paso 6): el navegador ya lo dibujó en un <canvas> y manda el PNG EXACTO
+    // que el usuario vio — acá solo se guarda y se superpone, nunca se re-dibuja (ver portada.js).
+    const cartelPath = guardarCartelPNG(efectos?.cartelPNG, jobId);
 
     const resultado = await video.montarVideoPlan(plan, archivos, audio.path, jobId, {
       zoom: efectos.zoom || 'ninguno',
       zoomPct: Number(efectos.zoomPct) || 20,
       espejo: efectos.espejo || 'ninguno',
+      transicion: efectos.transicion || 'ninguno',
+      transicionDur,
+      transicionTipo: efectos.transicionTipo,
+      cartelPath,
     });
 
     const videoName = `${job.nombreCorto || 'video'}_${Date.now()}.mp4`.replace(/[^\w.\-]/g, '_');
@@ -433,6 +572,7 @@ app.post('/api/generate-video', async (req, res) => {
 
     job.videoPath = finalDest;
     job.videoName = videoName;
+    job.cartelPath = cartelPath;
     job.paso = 'completado';
 
     video.limpiarTemporales(jobId);
@@ -445,8 +585,10 @@ app.post('/api/generate-video', async (req, res) => {
 
     res.json({
       downloadUrl: `/api/download-video/${jobId}`,
+      videoUrl: `/api/video-preview/${jobId}`,
       videoName,
       duracion: resultado.duracion,
+      cartelUrl: cartelPath ? `/api/cartel/${jobId}` : null,
     });
   } catch (error) {
     console.error('Error en /api/generate-video:', error.message);
@@ -483,12 +625,31 @@ app.post('/api/exportar', async (req, res) => {
     const espejoPreset = efectos.espejo || 'ninguno';
     const zoomPct = Number(efectos.zoomPct) || 20;
 
+    // Mismo fix que video.js/montarVideoPlan (2026-08-16): seleccion.js planifica el offset
+    // contra la metadata de Drive, que a veces no reporta duración — si offset+duración se pasa
+    // del final real del archivo, `-ss`+`-t` corta en silencio un clip más corto de lo pedido,
+    // sin dar error. Acá se re-verifica contra la duración REAL ya descargada.
+    const duracionesReales = {};
+    async function duracionRealCacheada(ruta) {
+      if (!(ruta in duracionesReales)) {
+        duracionesReales[ruta] = await video.obtenerDuracion(ruta).catch(() => null);
+      }
+      return duracionesReales[ruta];
+    }
+
     let n = 1;
     for (let i = 0; i < plan.length; i++) {
       const clip = plan[i];
       if (!clip || !archivos[clip.videoId]) continue;
       const numero = String(n).padStart(2, '0');
       const outPath = path.join(clipsDir, `${numero}.mp4`);
+
+      let offsetEfectivo = clip.offset;
+      const durReal = await duracionRealCacheada(archivos[clip.videoId]);
+      if (durReal && offsetEfectivo + clip.duracion > durReal) {
+        offsetEfectivo = Math.max(0, durReal - clip.duracion);
+        console.warn(`  ⚠️ Clip ${i}: offset se pasaba de la duración real (${durReal.toFixed(2)}s) — corregido a ${offsetEfectivo.toFixed(2)}s`);
+      }
 
       const base = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30';
       const filtros = [base];
@@ -497,7 +658,7 @@ app.post('/api/exportar', async (req, res) => {
       if (video.decidirEfecto(espejoPreset, i).activo) filtros.push('hflip');
 
       await video.ffmpeg([
-        '-ss', clip.offset.toFixed(2),
+        '-ss', offsetEfectivo.toFixed(2),
         '-i', archivos[clip.videoId],
         '-t', clip.duracion.toFixed(3),
         '-vf', filtros.join(','),

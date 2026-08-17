@@ -387,6 +387,95 @@ main {
 
 .form-group { margin-bottom: 12px; }
 
+.checks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 4px 10px;
+    margin-top: 6px;
+}
+.checks-grid label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.85rem;
+    font-weight: 400;
+    cursor: pointer;
+}
+.checks-grid input[type="checkbox"] { margin: 0; }
+
+.hint {
+    color: #555;
+    font-size: 0.85rem;
+    margin-top: 6px;
+    line-height: 1.5;
+}
+.error-text {
+    color: #c0392b;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+.mt-sm { margin-top: 12px; }
+.tamano-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+}
+.tamano-row input[type="range"] { flex: 1; }
+.tamano-row input[type="number"] { width: 68px; flex: none; }
+
+.portada-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+.portada-controls input[type="text"] { flex: 1 1 220px; }
+.portada-controls select { flex: 0 0 auto; }
+.portada-preview {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    aspect-ratio: 9/16;
+    object-fit: cover;
+    border-radius: 12px;
+    margin: 12px auto 8px;
+}
+.result-video-player {
+    width: 100%;
+    max-width: 320px;
+    aspect-ratio: 9/16;
+    border-radius: 12px;
+    display: block;
+    margin: 0 auto 15px;
+}
+/* Mockup en vivo del cartel: <canvas> de 1080x1920 sobre fondo placeholder (Paso 6, sin video
+   real todavía) o sobre el fotograma capturado del player (post-render, "elegir portada"). */
+.portada-live {
+    position: relative;
+    width: 100%;
+    max-width: 320px;
+    aspect-ratio: 9/16;
+    margin: 8px auto 0;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #1a1a1a;
+}
+.portada-live canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.portada-cartel-canvas,
+.portada-live-cartel {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+}
+
 label {
     display: block;
     font-weight: 800;

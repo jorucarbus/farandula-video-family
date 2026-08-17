@@ -28,12 +28,24 @@ function lockFrom(stepId) {
     document.getElementById('result-section').classList.add('hidden');
 }
 
+// Tipos de transición tildados en el Paso 6 — el server elige al azar SOLO entre estos en cada
+// corte; 1 solo tildado = siempre esa; ninguno tildado = todas (video.js cae solo a 'aleatorio').
+function tiposTransicionElegidos() {
+    return [...document.querySelectorAll('#transicion-tipos-checks input[type="checkbox"]:checked')].map(c => c.value);
+}
+
 function setModo(modo) {
     if (modo === MODO) return;
     MODO = modo;
     document.getElementById('modo-selector').dataset.modo = modo;
     document.getElementById('producto-final-label').textContent = modo === 'video' ? 'Video' : 'Insumos';
     document.getElementById('btn-generate-video-label').textContent = cfg().finalLabel;
+    // Transiciones son un efecto ENTRE clips — no aplica a Insumos (clips sueltos para editar a
+    // mano, cada uno con sus propios efectos quemados pero sin mezcla con el vecino).
+    const esInsumos = modo === 'insumos';
+    ['transicion-group', 'transicion-tipo-group', 'transicion-dur-group'].forEach(id => {
+        document.getElementById(id)?.classList.toggle('hidden', esInsumos);
+    });
     state = { jobId: null, sourceData: null, selectedAngle: null, guion: null, fragments: null, audioToken: null, fuentes: [], sesgo: 'neutral' };
     renderFuentesLista();
     document.getElementById('lectura-section').classList.add('hidden');
@@ -557,6 +569,20 @@ async function handleGenerateVideo() {
             zoomPct: Number(document.getElementById('zoom-pct')?.value) || 20,
             espejo: document.getElementById('efecto-espejo')?.value || 'ninguno',
         };
+        // Transiciones y cartel solo aplican en modo Video — en Insumos cada clip sale suelto
+        // para edición manual (sin mezcla con el vecino, y sin un "frame 0" único para el cartel).
+        if (MODO === 'video') {
+            efectos.transicion = document.getElementById('efecto-transicion')?.value || 'ninguno';
+            efectos.transicionTipo = tiposTransicionElegidos();
+            efectos.transicionDur = Number(document.getElementById('transicion-dur')?.value) || 0.35;
+            // PNG EXACTO que se ve en la previa del Paso 6 (data URL) — el server no lo re-dibuja,
+            // lo superpone tal cual en el frame 0 y en el JPG.
+            const cartelPNG = await exportarCartelPNG();
+            if (document.getElementById('portada-titular')?.value.trim() && !cartelPNG) {
+                log('⚠️ No se pudo generar el cartel de portada: el video va a salir sin él.');
+            }
+            efectos.cartelPNG = cartelPNG;
+        }
 
         let resultado;
         if (MODO === 'video') {
@@ -596,11 +622,43 @@ function showResult(resultado) {
         return;
     }
 
+    const playerHtml = resultado.videoUrl
+        ? `<video id="result-video-player" controls playsinline class="result-video-player" src="${resultado.videoUrl}"></video>`
+        : '';
+
+    // El cartel quedó FIJO en el Paso 6, antes de generar: el server guardó el PNG que le mandó
+    // el navegador y devuelve su URL — es el MISMO archivo que quemó en el frame 0 y que se va a
+    // usar para el JPG. Acá solo se muestra, no se re-dibuja ni se re-edita.
+    const cartelUrl = resultado.cartelUrl || null;
+    const portadaHtml = cartelUrl ? `
+        <div class="portada-box mt-md" id="portada-box">
+            <p><strong>${icon('videoCamera')} Elegí la foto para el JPG de portada</strong></p>
+            <p class="hint">El cartel ya quedó quemado en el primer fotograma del video, tal como lo definiste en el Paso 6 — acá solo elegís QUÉ FOTO de fondo lleva el JPG descargable (mismo cartel, no se re-edita). Pausá el reproductor de arriba donde quieras.</p>
+            <div class="portada-live" id="portada-live">
+                <canvas id="portada-live-canvas"></canvas>
+                <img class="portada-live-cartel" src="${cartelUrl}" alt="">
+            </div>
+            <button class="btn btn-secondary mt-sm" type="button" id="btn-generar-portada" onclick="generarPortada()">${icon('sparkle')} Generar portada con esta foto</button>
+            <div id="portada-resultado"></div>
+        </div>
+    ` : '';
+
     resultInfo.innerHTML = `
+        ${playerHtml}
         <p><strong>${icon('checkCircle')} Video generado exitosamente</strong></p>
         <p>${icon('hourglass')} Duración: ${resultado.duracion}s</p>
         <p><a class="btn btn-primary" href="${resultado.downloadUrl}">${icon('link')} Descargar video (${resultado.videoName})</a></p>
+        ${portadaHtml}
     `;
+    if (cartelUrl) {
+        const videoEl = document.getElementById('result-video-player');
+        // Fotograma por defecto: el primero del video. 0.01 y no 0 a propósito — si currentTime
+        // ya está en 0 (arranca ahí), reasignarle 0 es un no-op, nunca dispara 'seeked' y el
+        // navegador no decodifica un frame pintable (mockup quedaba negro). Con 0.01s hay un seek
+        // real; la diferencia visual con el frame 0 es nula.
+        if (videoEl) { try { videoEl.currentTime = 0.01; } catch {} }
+        initPortadaLive();
+    }
     log('🎉 ¡Video listo para descargar!');
 }
 
@@ -696,6 +754,317 @@ function aplicarIconos() {
     });
 }
 
+// ---- Cartel de portada: UN SOLO dibujo, en canvas a tamaño real de video ----
+// Portado de farandula-video-generator (repo hermano). El cartel se dibuja UNA vez, acá, en un
+// <canvas> de 1080x1920 (tamaño real del video, mostrado chico por CSS) — ese canvas ES la vista
+// previa, y `canvas.toDataURL()` da exactamente esos píxeles como PNG, que es lo que el server
+// superpone en el frame 0 del video y en el JPG de portada. No hay dos dibujos que puedan diferir.
+const PORTADA_ANCHO_VIDEO = 1080;
+const PORTADA_ALTO_VIDEO = 1920;
+const PORTADA_ANCHO_UTIL = PORTADA_ANCHO_VIDEO - 70 - 70;
+const PORTADA_FONTSIZE_MAX = 94;
+const PORTADA_FONTSIZE_MIN = 36;
+const PORTADA_POS_Y_FRACCION = 0.58;
+const PORTADA_COLOR_CAJA = '#ff2d6b';
+const PORTADA_COLOR_TEXTO = '#ffffff';
+const PORTADA_MAX_LINEAS = 3;
+
+function portadaFontCss(claveFuente, fontsize) {
+    return `${fontsize}px 'cartel-${claveFuente}', sans-serif`;
+}
+
+// Parte `texto` en como máximo `maxLineas` líneas que quepan en `maxAncho` PÍXELES REALES, sin
+// cortar palabras (`ctx` ya debe tener la fuente/tamaño finales). Devuelve null si no entra —así
+// el automático prueba un tamaño más chico—, salvo `forzar`, que desborda la última línea.
+function portadaEnvolverMedido(ctx, texto, maxAncho, maxLineas, forzar) {
+    const palabras = texto.trim().split(/\s+/).filter(Boolean);
+    if (!palabras.length) return [''];
+    const lineas = [''];
+    for (const palabra of palabras) {
+        const actual = lineas[lineas.length - 1];
+        const candidata = actual ? `${actual} ${palabra}` : palabra;
+        if (ctx.measureText(candidata).width <= maxAncho || !actual) {
+            lineas[lineas.length - 1] = candidata;
+        } else if (lineas.length < maxLineas) {
+            lineas.push(palabra);
+        } else if (forzar) {
+            lineas[lineas.length - 1] = candidata;
+        } else {
+            return null;
+        }
+    }
+    return lineas;
+}
+
+function portadaAjustarTamanoMedido(ctx, texto, claveFuente) {
+    for (let fontsize = PORTADA_FONTSIZE_MAX; fontsize >= PORTADA_FONTSIZE_MIN; fontsize -= 3) {
+        ctx.font = portadaFontCss(claveFuente, fontsize);
+        const lineas = portadaEnvolverMedido(ctx, texto, PORTADA_ANCHO_UTIL, PORTADA_MAX_LINEAS, false);
+        if (lineas) return { lineas, fontsize };
+    }
+    ctx.font = portadaFontCss(claveFuente, PORTADA_FONTSIZE_MIN);
+    return {
+        lineas: portadaEnvolverMedido(ctx, texto, PORTADA_ANCHO_UTIL, PORTADA_MAX_LINEAS, true),
+        fontsize: PORTADA_FONTSIZE_MIN,
+    };
+}
+
+function portadaCaminoCajaRedondeada(ctx, x, y, w, h, r) {
+    const radio = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + radio, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radio);
+    ctx.arcTo(x + w, y + h, x, y + h, radio);
+    ctx.arcTo(x, y + h, x, y, radio);
+    ctx.arcTo(x, y, x + w, y, radio);
+    ctx.closePath();
+}
+
+// Dibuja el cartel completo (caja + línea blanca interior + texto) sobre un canvas de 1080x1920,
+// con fondo TRANSPARENTE — el PNG que sale de acá se superpone sobre cualquier fotograma.
+// Devuelve false si no hay titular (nada que dibujar).
+function dibujarCartel(canvas, { titular, fuente, tamanoManual, escalaCaja }) {
+    const ctx = canvas.getContext('2d');
+    canvas.width = PORTADA_ANCHO_VIDEO;
+    canvas.height = PORTADA_ALTO_VIDEO;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const texto = (titular || '').trim().toUpperCase();
+    if (!texto) return false;
+
+    const claveFuente = fuente || 'anton';
+    let lineas, fontsize;
+    if (Number.isFinite(tamanoManual)) {
+        fontsize = Math.max(24, Math.min(160, Math.round(tamanoManual)));
+        ctx.font = portadaFontCss(claveFuente, fontsize);
+        lineas = portadaEnvolverMedido(ctx, texto, PORTADA_ANCHO_UTIL, PORTADA_MAX_LINEAS, true);
+    } else {
+        ({ lineas, fontsize } = portadaAjustarTamanoMedido(ctx, texto, claveFuente));
+    }
+    ctx.font = portadaFontCss(claveFuente, fontsize);
+
+    const esc = Number.isFinite(escalaCaja) ? escalaCaja : 1;
+    const padX = Math.round(fontsize * 0.32 * esc);
+    const padY = Math.round(fontsize * 0.22 * esc);
+    const lineHeight = Math.round(fontsize * 1.08);
+    const lineSpacing = Math.round(fontsize * 0.08);
+    const anchoMaxLinea = Math.max(...lineas.map(l => ctx.measureText(l).width));
+    const boxW = Math.min(PORTADA_ANCHO_UTIL + padX * 2, Math.round(anchoMaxLinea + padX * 2));
+    const boxH = lineas.length * lineHeight + (lineas.length - 1) * lineSpacing + padY * 2;
+    const boxX = Math.round((PORTADA_ANCHO_VIDEO - boxW) / 2);
+    const boxY = Math.round(PORTADA_ALTO_VIDEO * PORTADA_POS_Y_FRACCION);
+    const radio = Math.max(14, Math.min(32, Math.round(fontsize * 0.4)));
+    const sombra = Math.max(2, Math.round(fontsize * 0.045));
+    const separacion = Math.max(5, Math.round(fontsize * 0.11 * esc));
+    const grosor = Math.max(3, Math.round(fontsize * 0.05));
+
+    portadaCaminoCajaRedondeada(ctx, boxX, boxY, boxW, boxH, radio);
+    ctx.fillStyle = PORTADA_COLOR_CAJA;
+    ctx.fill();
+    portadaCaminoCajaRedondeada(ctx, boxX + separacion, boxY + separacion,
+        boxW - separacion * 2, boxH - separacion * 2, Math.max(4, radio - separacion));
+    ctx.fillStyle = PORTADA_COLOR_TEXTO;
+    ctx.fill();
+    portadaCaminoCajaRedondeada(ctx, boxX + separacion + grosor, boxY + separacion + grosor,
+        boxW - (separacion + grosor) * 2, boxH - (separacion + grosor) * 2,
+        Math.max(4, radio - separacion - grosor));
+    ctx.fillStyle = PORTADA_COLOR_CAJA;
+    ctx.fill();
+
+    ctx.fillStyle = PORTADA_COLOR_TEXTO;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowOffsetX = sombra;
+    ctx.shadowOffsetY = sombra;
+    ctx.shadowBlur = sombra * 1.5;
+    const altoTexto = lineas.length * lineHeight + (lineas.length - 1) * lineSpacing;
+    let y = boxY + boxH / 2 - altoTexto / 2 + lineHeight / 2;
+    for (const linea of lineas) {
+        ctx.fillText(linea, boxX + boxW / 2, y);
+        y += lineHeight + lineSpacing;
+    }
+    ctx.shadowColor = 'transparent';
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.shadowBlur = 0;
+    return true;
+}
+
+function leerDisenoCartel() {
+    const titularEl = document.getElementById('portada-titular');
+    if (!titularEl) return null;
+    const autoEl = document.getElementById('portada-tamano-auto');
+    const tamanoEl = document.getElementById('portada-tamano-num');
+    const cajaEl = document.getElementById('portada-caja-num');
+    return {
+        titular: titularEl.value || '',
+        fuente: document.getElementById('portada-fuente')?.value || 'anton',
+        tamanoManual: autoEl && !autoEl.checked ? Number(tamanoEl?.value) || 94 : undefined,
+        escalaCaja: (Number(cajaEl?.value) || 100) / 100,
+    };
+}
+
+// La tipografía tiene que estar CARGADA antes de medir/dibujar, si no el canvas mide y dibuja con
+// una de reemplazo — y como este dibujo es el que se hornea en el video, la letra equivocada
+// llegaría al resultado final. Se carga el MISMO .ttf que sirve el server (/api/fuente/:clave),
+// no el de Google Fonts: los dos lados comparten el archivo exacto, sin depender de un CDN.
+const fuentesCartelCargadas = new Map();
+async function asegurarFuenteCargada(claveFuente) {
+    if (!window.FontFace || !document.fonts) return false;
+    if (!fuentesCartelCargadas.has(claveFuente)) {
+        fuentesCartelCargadas.set(claveFuente, (async () => {
+            try {
+                const ff = new FontFace(`cartel-${claveFuente}`, `url(/api/fuente/${encodeURIComponent(claveFuente)})`);
+                await ff.load();
+                document.fonts.add(ff);
+                return true;
+            } catch (e) {
+                // Solo se cachean los ÉXITOS: cachear un fallo dejaría la tipografía rota hasta
+                // recargar la página.
+                fuentesCartelCargadas.delete(claveFuente);
+                console.warn(`No se pudo cargar la tipografía "${claveFuente}" para el cartel:`, e.message);
+                return false;
+            }
+        })());
+    }
+    return fuentesCartelCargadas.get(claveFuente);
+}
+
+function avisarFuenteCartel(ok) {
+    const el = document.getElementById('portada-fuente-aviso');
+    if (!el) return;
+    el.textContent = ok ? '' : '⚠️ No se pudo cargar esa tipografía: el cartel se está dibujando con una letra de reemplazo, y así quedaría en el video. Revisá la conexión o elegí otra.';
+    el.style.display = ok ? 'none' : 'block';
+}
+
+async function actualizarPortadaDiseno() {
+    const canvas = document.getElementById('portada-diseno-canvas');
+    const diseno = leerDisenoCartel();
+    if (!canvas || !diseno) return;
+    avisarFuenteCartel(await asegurarFuenteCargada(diseno.fuente));
+    dibujarCartel(canvas, { ...diseno, titular: diseno.titular || '...' });
+}
+
+function initPortadaDiseno() {
+    document.getElementById('portada-titular')?.addEventListener('input', actualizarPortadaDiseno);
+    document.getElementById('portada-fuente')?.addEventListener('change', actualizarPortadaDiseno);
+    actualizarPortadaDiseno();
+}
+
+function initPortadaTamano() {
+    const auto = document.getElementById('portada-tamano-auto');
+    const slider = document.getElementById('portada-tamano');
+    const num = document.getElementById('portada-tamano-num');
+    if (!auto || !slider || !num) return;
+    const sync = valor => {
+        const n = Math.max(24, Math.min(160, Math.round(valor) || 94));
+        slider.value = n;
+        num.value = n;
+    };
+    auto.addEventListener('change', () => {
+        slider.disabled = auto.checked;
+        num.disabled = auto.checked;
+        actualizarPortadaDiseno();
+    });
+    slider.addEventListener('input', () => { sync(slider.value); actualizarPortadaDiseno(); });
+    num.addEventListener('input', () => { sync(num.value); actualizarPortadaDiseno(); });
+}
+
+function initPortadaCaja() {
+    const slider = document.getElementById('portada-caja');
+    const num = document.getElementById('portada-caja-num');
+    if (!slider || !num) return;
+    const sync = valor => {
+        const n = Math.max(50, Math.min(250, Math.round(valor) || 100));
+        slider.value = n;
+        num.value = n;
+    };
+    slider.addEventListener('input', () => { sync(slider.value); actualizarPortadaDiseno(); });
+    num.addEventListener('input', () => { sync(num.value); actualizarPortadaDiseno(); });
+}
+
+// PNG del cartel tal como se ve en la previa, listo para mandar al server. Devuelve null si no
+// hay titular (el usuario no quiere cartel). Es una data URL porque viaja dentro del JSON del
+// pedido de generar video, junto al resto de los efectos.
+async function exportarCartelPNG() {
+    const diseno = leerDisenoCartel();
+    if (!diseno || !diseno.titular.trim()) return null;
+    await asegurarFuenteCargada(diseno.fuente);
+    const canvas = document.createElement('canvas');
+    if (!dibujarCartel(canvas, diseno)) return null;
+    return canvas.toDataURL('image/png');
+}
+
+// Catálogo de tipografías del cartel (server: fuentesCartel.js) — evita mantener una lista
+// duplicada acá; si se agrega/saca una fuente, el selector se actualiza solo.
+async function cargarFuentesEnSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    try {
+        const { fuentes, default: porDefecto } = await apiCall('/fuentes-cartel', 'GET');
+        select.innerHTML = fuentes.map(f => `<option value="${f.clave}">${f.familia}</option>`).join('');
+        select.value = porDefecto || fuentes[0]?.clave || 'anton';
+    } catch (e) {
+        console.warn(`No se pudo cargar el catálogo de tipografías para #${selectId}:`, e.message);
+    }
+}
+
+// Post-render — ELEGIR FOTO: fotograma real capturado del reproductor + EL PNG REAL del cartel
+// encima (`cartelUrl`, el mismo archivo que el server ya quemó en el frame 0). No se re-dibuja ni
+// se aproxima nada acá: es la imagen final, estirada al mismo recuadro.
+function initPortadaLive() {
+    const videoEl = document.getElementById('result-video-player');
+    const canvas = document.getElementById('portada-live-canvas');
+    if (!videoEl || !canvas) return;
+
+    const capturarFrame = () => {
+        try {
+            canvas.width = 270;
+            canvas.height = 480;
+            canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+        } catch {} // video aún no tiene un frame decodificado — se reintenta en el próximo evento
+    };
+
+    videoEl.addEventListener('seeked', capturarFrame);
+    videoEl.addEventListener('loadeddata', capturarFrame);
+
+    let intentos = 0;
+    const intentarCaptura = () => {
+        if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) capturarFrame();
+        else if (intentos < 20) { intentos++; setTimeout(intentarCaptura, 100); }
+    };
+    intentarCaptura();
+}
+
+// Genera el JPG de portada: fotograma elegido en el player + EL MISMO cartel ya quemado en el
+// frame 0 (texto/fuente/tamaño/caja vienen del server, guardados junto al video — acá no se
+// re-envían ni se re-editan).
+async function generarPortada() {
+    const videoEl = document.getElementById('result-video-player');
+    const destino = document.getElementById('portada-resultado');
+    if (!state.jobId) {
+        alert('No hay video disponible (generá el video de nuevo)');
+        return;
+    }
+    setButtonDisabled('btn-generar-portada', true);
+    destino.innerHTML = '';
+    try {
+        const { portadaUrl } = await apiCall('/portada', 'POST', {
+            jobId: state.jobId,
+            timestamp: videoEl ? videoEl.currentTime : 0,
+        });
+        destino.innerHTML = `
+            <img src="${portadaUrl}" alt="Portada" class="portada-preview">
+            <p><a href="${portadaUrl}" download="portada.jpg" class="btn btn-secondary">${icon('folderOpen')} Descargar portada (JPG)</a></p>
+        `;
+    } catch (e) {
+        destino.innerHTML = `<p class="error-text">Error generando la portada: ${e.message}</p>`;
+    } finally {
+        setButtonDisabled('btn-generar-portada', false);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     if (!requireLogin()) return;
 
@@ -708,4 +1077,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const contPasos = contenedorPasos();
     if (contPasos) contPasos.addEventListener('scroll', actualizarPasosIndicador);
     actualizarPasosIndicador();
+    cargarFuentesEnSelect('portada-fuente').then(initPortadaDiseno);
+    initPortadaTamano();
+    initPortadaCaja();
 });

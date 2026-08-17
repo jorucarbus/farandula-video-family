@@ -213,6 +213,68 @@
                     </select>
                 </div>
 
+                <div class="form-group" id="transicion-group">
+                    <label for="efecto-transicion">Transición entre clips (solo modo Video, no Insumos):</label>
+                    <select id="efecto-transicion">
+                        <option value="ninguno" selected>Ninguna (corte seco)</option>
+                        <option value="todos">Todos los cortes</option>
+                        <option value="alternado">Alternado (uno sí, uno no)</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="transicion-tipo-group">
+                    <label>Tipos de transición (se elige al azar ENTRE las marcadas en cada corte; marca 1 sola para que sea siempre esa; ninguna marcada = todas):</label>
+                    <div class="checks-grid" id="transicion-tipos-checks">
+                        <label><input type="checkbox" value="fade" checked> Fundido</label>
+                        <label><input type="checkbox" value="fadeblack"> Fundido a negro</label>
+                        <label><input type="checkbox" value="wipeleft" checked> Barrido izq.</label>
+                        <label><input type="checkbox" value="wiperight" checked> Barrido der.</label>
+                        <label><input type="checkbox" value="wipeup"> Barrido arriba</label>
+                        <label><input type="checkbox" value="wipedown"> Barrido abajo</label>
+                        <label><input type="checkbox" value="slideleft"> Deslizar izq.</label>
+                        <label><input type="checkbox" value="slideright"> Deslizar der.</label>
+                        <label><input type="checkbox" value="slideup" checked> Deslizar arriba</label>
+                        <label><input type="checkbox" value="slidedown"> Deslizar abajo</label>
+                        <label><input type="checkbox" value="circleopen" checked> Círculo (abre)</label>
+                        <label><input type="checkbox" value="circleclose"> Círculo (cierra)</label>
+                        <label><input type="checkbox" value="dissolve"> Disolución</label>
+                        <label><input type="checkbox" value="pixelize"> Pixelado</label>
+                        <label><input type="checkbox" value="radial"> Radial</label>
+                        <label><input type="checkbox" value="zoomin"> Zoom in</label>
+                    </div>
+                </div>
+
+                <div class="form-group" id="transicion-dur-group">
+                    <label for="transicion-dur">Duración de la transición (segundos):</label>
+                    <input type="number" id="transicion-dur" value="0.35" min="0.1" max="0.6" step="0.05">
+                </div>
+
+                <div class="form-group" id="portada-diseno-group">
+                    <label><strong>Cartel de portada</strong></label>
+                    <p class="hint">Se quema en el primer fotograma del video (para que sirva como portada en TikTok y las demás redes, que no tienen API para fijarla) y se reusa TAL CUAL, sin volver a editarlo, cuando después elijas la foto para el JPG descargable — ambos salen idénticos. Dejalo vacío si no querés cartel.</p>
+                    <div class="portada-controls">
+                        <input type="text" id="portada-titular" placeholder="Titular..." maxlength="90">
+                        <select id="portada-fuente"><option value="anton">Cargando...</option></select>
+                    </div>
+                    <label class="mt-sm"><input type="checkbox" id="portada-tamano-auto" checked> Tamaño de letra automático</label>
+                    <div class="tamano-row">
+                        <input type="range" id="portada-tamano" min="24" max="160" step="1" value="94" disabled>
+                        <input type="number" id="portada-tamano-num" min="24" max="160" step="1" value="94" disabled>
+                        <span class="hint">pt</span>
+                    </div>
+                    <label class="mt-sm">Tamaño de la caja (independiente de la letra):</label>
+                    <div class="tamano-row">
+                        <input type="range" id="portada-caja" min="50" max="250" step="5" value="100">
+                        <input type="number" id="portada-caja-num" min="50" max="250" step="5" value="100">
+                        <span class="hint">%</span>
+                    </div>
+                    <p class="error-text" id="portada-fuente-aviso" style="display:none"></p>
+                    <label class="mt-sm">Vista previa (el fondo es de referencia — el video todavía no existe; el cartel es EXACTO: esta misma imagen es la que se superpone en el video y en el JPG):</label>
+                    <div class="portada-live" id="portada-diseno-live">
+                        <canvas id="portada-diseno-canvas" class="portada-cartel-canvas"></canvas>
+                    </div>
+                </div>
+
                 <button class="btn btn-success" id="btn-generate-video" onclick="handleGenerateVideo()">
                     <span class="icon-slot" data-icon="rocketLaunch"></span>
                     <span id="btn-generate-video-label">Generar y descargar video</span>

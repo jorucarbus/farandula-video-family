@@ -34,14 +34,81 @@ function flagsAArgs(flags) {
   return out;
 }
 
-function ytdlp(url, flags = {}) {
+function ytdlpUnaVez(bin, url, flags, timeoutMs) {
   return new Promise((resolve, reject) => {
     const args = [url, ...flagsAArgs(flags)];
-    execFile(YTDLP_BIN, args, { maxBuffer: 100 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(bin, args, { maxBuffer: 100 * 1024 * 1024, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) return reject(Object.assign(err, { stderr, stdout }));
       resolve({ stdout, stderr });
     });
   });
+}
+
+// yt-dlp puede colgarse SIN dar ningún error cuando la red social del otro lado no responde
+// (el anti-bot se queda esperando en vez de rechazar) — un execFile sin timeout se queda
+// esperando indefinidamente hasta que algo externo (el gateway de Railway) corta la conexión a
+// los ~5 minutos con un 502 sin ninguna pista de la causa real. Portado del repo principal
+// (farandula-video-generator, 2026-08-13): 3 intentos de 40s cada uno con una pausa de 2s entre
+// intentos, así "colgado 5 min sin pista" se convierte en "falla clara en menos de 2 min".
+const YTDLP_TIMEOUT_MS = 40000;
+const YTDLP_INTENTOS = 3;
+
+// Bug abierto de yt-dlp con TikTok (yt-dlp/yt-dlp#17403 y #17407, agosto 2026): el "challenge"
+// anti-bot que TikTok exige resolver cambió y ninguna versión reciente de yt-dlp sabe resolverlo
+// todavía — falla con "Unexpected response from webpage request". La única versión que sigue
+// funcionando es la anterior al cambio (2026.03.17). En vez de downgradear el binario principal
+// (más nuevo = mejor para YouTube y el resto), se descarga esa versión vieja UNA sola vez
+// (on-demand, cacheada en TEMP_DIR) y se usa solo como último recurso, solo contra tiktok.com,
+// solo cuando el normal falla con la firma exacta de este bug. El día que yt-dlp lo arregle río
+// arriba, el binario normal vuelve a ganar solo, sin tocar código.
+const YTDLP_LEGACY_VERSION = '2026.03.17';
+const YTDLP_LEGACY_PATH = path.join(TEMP_DIR, process.platform === 'win32' ? 'yt-dlp-legacy.exe' : 'yt-dlp-legacy');
+
+async function asegurarYtdlpLegacy() {
+  if (fs.existsSync(YTDLP_LEGACY_PATH)) return YTDLP_LEGACY_PATH;
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+  const nombreAsset = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+  const url = `https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_LEGACY_VERSION}/${nombreAsset}`;
+  console.log(`  ⬇️ Descargando yt-dlp ${YTDLP_LEGACY_VERSION} (fallback del bug de TikTok, una sola vez)...`);
+  const respuesta = await axios.get(url, { responseType: 'stream', timeout: 30000, maxRedirects: 5 });
+  await new Promise((resolve, reject) => {
+    const destino = fs.createWriteStream(YTDLP_LEGACY_PATH);
+    respuesta.data.pipe(destino);
+    destino.on('finish', resolve);
+    destino.on('error', reject);
+  });
+  if (process.platform !== 'win32') fs.chmodSync(YTDLP_LEGACY_PATH, 0o755);
+  return YTDLP_LEGACY_PATH;
+}
+
+function esErrorChallengeTiktok(e) {
+  return /Unexpected response from webpage request/i.test(`${e?.stderr || ''} ${e?.message || ''}`);
+}
+
+async function ytdlp(url, flags = {}) {
+  let ultimoError;
+  for (let intento = 1; intento <= YTDLP_INTENTOS; intento++) {
+    try {
+      return await ytdlpUnaVez(YTDLP_BIN, url, flags, YTDLP_TIMEOUT_MS);
+    } catch (e) {
+      ultimoError = e;
+      const esTimeout = e.killed === true || e.signal === 'SIGTERM';
+      console.warn(`  ⚠️ yt-dlp intento ${intento}/${YTDLP_INTENTOS} falló${esTimeout ? ' (sin respuesta, timeout)' : ''}: ${String(e.message).split('\n')[0]}`);
+      if (intento < YTDLP_INTENTOS) await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
+  if (/tiktok\.com/i.test(url) && esErrorChallengeTiktok(ultimoError)) {
+    try {
+      const binLegacy = await asegurarYtdlpLegacy();
+      console.warn(`  🩹 yt-dlp normal no puede con TikTok ahora mismo (bug conocido, yt-dlp/yt-dlp#17403) — reintentando con ${YTDLP_LEGACY_VERSION}...`);
+      return await ytdlpUnaVez(binLegacy, url, flags, YTDLP_TIMEOUT_MS);
+    } catch (e2) {
+      console.warn(`  ⚠️ yt-dlp legacy también falló: ${String(e2.message).split('\n')[0]}`);
+    }
+  }
+
+  throw ultimoError;
 }
 
 function esYoutube(url) {
