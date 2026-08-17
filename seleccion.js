@@ -41,10 +41,15 @@ function shuffle(arr) {
   return a;
 }
 
-// Reparte la duración de un párrafo en tomas de ≤ CLIP_MAX segundos, todas iguales.
+// Reparte la duración de un párrafo en tomas de ≤ clipMax segundos, todas iguales.
 // Ej: 7s → 3 tomas de 2.33s (mejor 2 cortas que una toma alargada).
-function repartirTomas(duracion) {
-  const n = Math.max(1, Math.ceil(duracion / CLIP_MAX));
+//
+// clipMax (transiciones, opcional): con xfade activo, cada clip que empalma con el siguiente
+// necesita `duración + D` de metraje FUENTE para la cola de mezcla — así que el llamador pasa
+// `CLIP_MAX - D` para que esa cola nunca empuje la extracción real por encima del límite legal
+// de 3s. Sin transiciones, se usa el CLIP_MAX normal (comportamiento de siempre).
+function repartirTomas(duracion, clipMax = CLIP_MAX) {
+  const n = Math.max(1, Math.ceil(duracion / clipMax));
   return Array(n).fill(duracion / n);
 }
 
@@ -76,17 +81,33 @@ function agruparParaClips(parrafos, tiempos) {
   return bloques;
 }
 
+// Tiempo por párrafo: real (Whisper, si calza en longitud con parrafos) o estimado por % de
+// caracteres. Compartido entre planificarClips() y subtitulos.js — misma línea de tiempo para
+// el corte de video y para los subtítulos, nunca dos relojes distintos.
+function tiemposPorFragmento(parrafos, duracionAudio, duracionesReales = null) {
+  const usaReales = Array.isArray(duracionesReales) && duracionesReales.length === parrafos.length;
+  if (usaReales) return duracionesReales;
+  const totalChars = parrafos.reduce((s, p) => s + p.caracteres, 0);
+  if (!totalChars) throw new Error('Párrafos sin caracteres');
+  return parrafos.map(p => duracionAudio * (p.caracteres / totalChars));
+}
+
 // parrafos: [{texto, famoso, caracteres}] en orden narrativo
 // duracionAudio: segundos reales de la locución (ffprobe)
 // inventario: {famoso: [{id, name, duracion|null}]}
+// duracionesReales (opcional): tiempo real por párrafo, de tiempos.alinearFragmentosPalabras()
+//   (Whisper). Si no llega, o no calza en longitud con parrafos, cae al reparto por % de
+//   caracteres — mismo comportamiento de siempre, sin romper nada.
+// clipMax (opcional): ver repartirTomas() — pasar CLIP_MAX - D cuando el render va a llevar
+//   transiciones xfade. Sin esto (default), comportamiento idéntico a antes de las transiciones.
 // Devuelve: [{videoId, nombre, famoso, offset, duracion, parrafoIdx}] en orden de línea de tiempo
-function planificarClips(parrafos, duracionAudio, inventario) {
+function planificarClips(parrafos, duracionAudio, inventario, duracionesReales = null, clipMax = CLIP_MAX) {
   const historial = cargarHistorial();
-  const totalChars = parrafos.reduce((s, p) => s + p.caracteres, 0);
-  if (!totalChars) throw new Error('Párrafos sin caracteres');
+  const usaReales = Array.isArray(duracionesReales) && duracionesReales.length === parrafos.length;
+  if (usaReales) console.log('  ⏱️ Usando tiempos reales de la locución (no % de caracteres)');
 
-  // 1. Línea de tiempo: cada párrafo → su tiempo → agrupar los muy cortos → sus tomas
-  const tiempos = parrafos.map(p => duracionAudio * (p.caracteres / totalChars));
+  // 1. Línea de tiempo por párrafo → agrupar los muy cortos → sus tomas
+  const tiempos = tiemposPorFragmento(parrafos, duracionAudio, duracionesReales);
   const bloques = agruparParaClips(parrafos, tiempos);
   const fusionados = parrafos.length - bloques.length;
   if (fusionados > 0) {
@@ -95,7 +116,7 @@ function planificarClips(parrafos, duracionAudio, inventario) {
 
   const requerimientos = [];
   for (const bloque of bloques) {
-    for (const dur of repartirTomas(bloque.tiempo)) {
+    for (const dur of repartirTomas(bloque.tiempo, clipMax)) {
       requerimientos.push({ famoso: bloque.famoso, dur, parrafoIdx: bloque.indices[0] });
     }
   }
@@ -194,4 +215,4 @@ function planificarClips(parrafos, duracionAudio, inventario) {
   return plan;
 }
 
-module.exports = { planificarClips, repartirTomas, agruparParaClips, CLIP_MAX, CLIP_MIN, RECORTE_INICIAL };
+module.exports = { planificarClips, tiemposPorFragmento, repartirTomas, agruparParaClips, CLIP_MAX, CLIP_MIN, RECORTE_INICIAL };

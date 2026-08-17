@@ -21,10 +21,10 @@ Account que usa el repo principal, no una copia), sin `elevenlabs.js` (el usuari
 `audio.mp3`, endpoint `/api/upload-audio`), sin `driveCache.js`/`jobStore.js` persistente (jobs
 en memoria, `Map`, se pierden con cada reinicio — aceptado por diseño, ver README).
 
-**No portado, con motivo documentado** (ver sesión 2026-08-16 abajo): subtítulos ASS con timing
-por palabra (necesitan la alineación de ElevenLabs, que esta versión no tiene) y música de fondo
-por tono de noticia (el Service Account de Drive no tiene acceso a la carpeta `Musica/` — solo
-compartida con la cuenta OAuth del usuario, que esta app deliberadamente no usa).
+**No portado, con motivo documentado** (ver sesión 2026-08-16 abajo): música de fondo por tono de
+noticia (el Service Account de Drive no tiene acceso a la carpeta `Musica/` — solo compartida con
+la cuenta OAuth del usuario, que esta app deliberadamente no usa). Subtítulos SÍ están, pero con
+una fuente de timing distinta a la del principal — ver "Transcripción + subtítulos" abajo.
 
 ## Sesiones recientes
 
@@ -115,10 +115,95 @@ escribir un titular, sin errores de consola. Datos de prueba (video/cartel/audio
 cuentas de prueba en Postgres) limpiados del disco al terminar; las cuentas de prueba quedan en
 la base de datos (bajo riesgo: la app no tiene tráfico real todavía).
 
-**Pendiente real que queda**:
+**Pendiente real que queda** (al cierre de esta sesión, antes de subtítulos — ver sesión
+siguiente, que resuelve el punto 2):
 1. Música de fondo — bloqueada en el Drive del usuario (ver arriba), no en el código.
-2. Subtítulos — necesita una pieza de alineación de audio que no existe en este repo.
+2. ~~Subtítulos~~ — resuelto en la sesión siguiente (transcripción con Whisper).
 3. Deploy a Railway (README dice "Fases Pendientes: Phase 6", sigue sin hacerse — fuera de
    alcance de esta sesión, no se tocó infraestructura).
 4. README.md quedó desactualizado (dice "Fases Pendientes" que en su mayoría ya están hechas,
    de sesiones anteriores) — no se reescribió esta sesión, prioridad baja.
+
+### 2026-08-17 (Windows) — Subtítulos: transcripción alineada con Whisper (OpenAI), en vez de ElevenLabs
+
+Pedido del usuario: "existe algo que escuche el audio que suban mis hermanos y que haga la
+transcripción alineada?" — el bloqueo de subtítulos de la sesión anterior era exactamente eso:
+el timing por palabra del repo principal sale de la alineación de ElevenLabs (viene gratis con el
+audio generado), y acá el audio lo sube el usuario ya grabado, sin alineación de ningún proveedor.
+
+**Comparado con el usuario** Google Cloud STT vs OpenAI Whisper-1 (única opción de OpenAI con
+timestamps por palabra — los modelos `gpt-4o-transcribe` no los dan) — Whisper ganó: $0.006/min
+desde el minuto 1 vs $0.024/min de Google pasado su franja gratis (60 min/mes), y sin la ceremonia
+de habilitar facturación en un proyecto de Google Cloud. El usuario aceptó la recomendación.
+
+**Piezas nuevas**:
+- `transcripcion.js` — llama a `POST /v1/audio/transcriptions` de OpenAI (`whisper-1`,
+  `response_format=verbose_json`, `timestamp_granularities[]=word`, `language=es` fijo). Nunca
+  lanza: sin `OPENAI_API_KEY`, o si Whisper falla, devuelve `null` y el video sale igual, con
+  subtítulos por reparto estimado (% de caracteres) en vez de timing real.
+- `tiempos.js` — la "puerta abierta" que el propio `tiempos.js` del repo principal dejó anotada
+  el 2026-08-08 ("sirve además para farandula-video-family, donde el audio lo sube el usuario y
+  no hay timestamps de ningún proveedor"). A diferencia del principal (alinea CARACTERES de
+  ElevenLabs con fuzzy-match), acá Whisper ya da PALABRAS con inicio/fin — el match es palabra
+  contra palabra normalizada (sin tildes/mayúsculas/puntuación de borde), con una ventana de
+  tolerancia de 3 posiciones por si Whisper se saltea o inventa una palabra. Misma forma de
+  salida que `alinearFragmentos` del principal (`{ duraciones, palabras }`), para que
+  `seleccion.tiemposPorFragmento()` y `subtitulos.generarASS()` (ambos portados sin tocar) no
+  sepan ni les importe de dónde salió el timing.
+- `subtitulos.js` — copiado tal cual del principal (post-actualización de ayer de la Mac:
+  catálogo Bangers/210pt/606 por defecto, preview canvas). Reemplaza a `fuentesCartel.js`
+  (borrado): un solo catálogo de tipografías para subtítulos Y cartel, como en el principal.
+
+**Bug real encontrado portando esto, sin relación con Whisper**: `seleccion.js` de family era
+una versión VIEJA — `planificarClips()` no aceptaba `duracionesReales`/`clipMax`, y
+`tiemposPorFragmento()` no existía. Consecuencia silenciosa: el wiring de `clipMax` para
+transiciones que se agregó el 2026-08-16 (tarea "20" de esa sesión) **nunca hizo nada** — JS
+ignora argumentos de más, así que `planificarClips(..., null, clipMax)` llamaba a la función
+vieja de 3 parámetros sin error ni warning. Portado el `repartirTomas(duracion, clipMax)` y
+`planificarClips(parrafos, duracionAudio, inventario, duracionesReales, clipMax)` actuales del
+principal, más `tiemposPorFragmento()`. De paso se encontró un SEGUNDO problema del mismo tipo:
+`prepararClips()` en `server.js` hardcodeaba `duracionesReales` a `null` — los CORTES de video
+habrían seguido por % de caracteres mientras los subtítulos usaban timing real de Whisper, dos
+relojes distintos desincronizados entre sí (exactamente lo que el comentario del principal
+advierte: "misma línea de tiempo para el corte de video y para los subtítulos, nunca dos relojes
+distintos"). Arreglado: `prepararClips()` ahora recibe y pasa `duracionesReales`.
+
+**server.js**: `/api/upload-audio` transcribe+alinea contra `job.fragments` (ya existen en ese
+punto del flujo, Paso 3 corre antes que Paso 4) apenas sube el audio, y guarda
+`duracionesReales`/`palabrasAlineadas` en `audiosPendientes` — mismo momento y misma forma que el
+principal guarda la alineación de ElevenLabs. `/api/generate-video` arma el `.ass` con
+`subtitulos.generarASS()` igual que el principal. Nuevo bug preexistente arreglado de paso: el
+middleware de auth bloqueaba `/api/fuentes-subtitulos` no, ese ya estaba bien — pero se renombró
+`/api/fuentes-cartel` → `/api/fuentes-subtitulos` (mismo catálogo compartido, mismo nombre que el
+principal).
+
+**Frontend**: preview de subtítulos portado tal cual (canvas 1080x1920 con cuadrícula, zonas
+seguras de TikTok/YouTube Shorts/Facebook Reels, arrastre para fijar `MarginV`) — mismo código
+que ayer escribió la Mac en el principal. `<link>` de Google Fonts agregado al `<head>` SOLO para
+esta vista previa (el render real sigue self-hosted vía `fontsdir` de ffmpeg, nunca dependió del
+CDN). `handleGenerateVideo()` manda `efectos.subtitulos/subtitulosFuente/subtitulosTamano/
+subtitulosMarginV` en modo Video (no en Insumos, mismo criterio que transiciones y cartel: no hay
+timeline única sobre la que quemar nada).
+
+**Verificado real, sin la key todavía** (no se configuró `OPENAI_API_KEY` esta sesión — pendiente
+que el usuario la provea): pipeline completo con 41 clips, 5 tandas de transiciones, cartel Y
+subtítulos juntos. El log confirmó la degradación exactamente como se diseñó
+(`⚠️ Falta OPENAI_API_KEY: subtítulos van a salir sin timing real`), se generó un `.ass` real de
+24KB, y el frame 60 extraído del video final muestra la palabra "YA" quemada en Bangers/amarillo
+con contorno negro — confirmado visualmente, no solo por la existencia del archivo. Frame 0
+confirma que el cartel sigue intacto y sin superponerse con el subtítulo. `tiempos.js` (el
+matching palabra-por-palabra) se probó aparte, unitario: "Piqué" (guion) matcheó correctamente
+contra "Pique" (sin tilde, como transcribiría Whisper) — confirma que la normalización funciona
+antes de gastar una llamada real a la API.
+
+**Sin verificar todavía**: el camino REAL de Whisper (con `OPENAI_API_KEY` puesta) no se probó
+end-to-end — ni la llamada a la API en sí, ni que `alinearFragmentosPalabras()` calce bien contra
+una transcripción real (con sus propios errores de reconocimiento, no el "Pique sin tilde"
+sintético de la prueba unitaria). Es lo primero para retomar apenas el usuario dé la key.
+
+**Pendiente real, actualizado**:
+1. **Verificar el camino real de Whisper** con `OPENAI_API_KEY` puesta — ver arriba.
+2. Música de fondo — sigue bloqueada en el Drive del usuario (sin cambios).
+3. Deploy a Railway — sin cambios, ver sesión anterior. Si se despliega, no olvidar
+   `OPENAI_API_KEY` entre las variables de entorno (ver `.env.example`, actualizado esta sesión).
+4. README.md sigue desactualizado — sin cambios, prioridad baja.

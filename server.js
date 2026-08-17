@@ -19,7 +19,9 @@ const auth = require('./auth');
 const db = require('./db');
 const cleanupCron = require('./cleanupCron');
 const portada = require('./portada');
-const fuentesCartel = require('./fuentesCartel');
+const subtitulos = require('./subtitulos');
+const transcripcion = require('./transcripcion');
+const tiempos = require('./tiempos');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -122,21 +124,22 @@ function guardarCartelPNG(dataUrl, jobId) {
   }
 }
 
-// Catálogo de tipografías del cartel de portada — la UI lo pide en vez de mantener una lista
-// duplicada.
-app.get('/api/fuentes-cartel', (req, res) => {
-  const fuentes = Object.entries(fuentesCartel.FUENTES).map(([clave, f]) => ({ clave, familia: f.familia }));
-  res.json({ fuentes, default: fuentesCartel.FUENTE_DEFAULT });
+// Catálogo de tipografías — COMPARTIDO entre subtítulos y cartel de portada (mismo criterio que
+// el repo principal: un solo catálogo en subtitulos.js, la UI lo pide en vez de mantener una
+// lista duplicada).
+app.get('/api/fuentes-subtitulos', (req, res) => {
+  const fuentesLista = Object.entries(subtitulos.FUENTES).map(([clave, f]) => ({ clave, familia: f.familia, factorAncho: f.factorAncho }));
+  res.json({ fuentes: fuentesLista, default: subtitulos.FUENTE_DEFAULT });
 });
 
 // Archivo .ttf de una tipografía del catálogo — el navegador lo carga con la API FontFace para
 // dibujar el cartel con la MISMA tipografía que después se hornea en el video (ver
 // public/app.js: asegurarFuenteCargada). Público: FontFace.load() no puede mandar headers.
 app.get('/api/fuente/:clave', async (req, res) => {
-  const fuente = fuentesCartel.FUENTES[req.params.clave];
+  const fuente = subtitulos.FUENTES[req.params.clave];
   if (!fuente) return res.status(404).json({ error: 'Tipografía desconocida' });
   try {
-    const dir = await fuentesCartel.obtenerCarpetaFuentes(req.params.clave);
+    const dir = await subtitulos.obtenerCarpetaFuentes(req.params.clave);
     const ruta = dir && path.join(dir, fuente.archivo);
     if (!ruta || !fs.existsSync(ruta)) {
       return res.status(503).json({ error: `No se pudo obtener la tipografía "${fuente.familia}"` });
@@ -473,7 +476,27 @@ app.post('/api/upload-audio', audioUpload.single('audioFile'), async (req, res) 
     const audioPath = path.join(TEMP_DIR, `audio_${audioToken}.mp3`);
     fs.renameSync(req.file.path, audioPath);
 
-    audiosPendientes.set(audioToken, { path: audioPath, duracion });
+    // Timing por palabra para los subtítulos (puerta abierta del repo principal, ver tiempos.js):
+    // acá no hay alineación de ningún proveedor de TTS porque el audio lo sube el usuario ya
+    // grabado, así que se transcribe con Whisper y se alinea palabra a palabra contra los
+    // fragmentos YA asignados (Paso 3, siempre corre antes que este paso en el flujo real).
+    // Nunca aborta la subida: si falta la key, si Whisper falla, o si el audio no calza con el
+    // guion (el usuario ad-libbeó o se equivocó leyendo), el audio se acepta igual — los
+    // subtítulos van a salir con el reparto estimado por % de caracteres en vez de timing real.
+    let duracionesReales = null;
+    let palabrasAlineadas = null;
+    if (job.fragments && job.fragments.length) {
+      try {
+        const palabrasTranscritas = await transcripcion.transcribirConTimestamps(audioPath);
+        const alineado = tiempos.alinearFragmentosPalabras(job.fragments, palabrasTranscritas, duracion);
+        duracionesReales = alineado?.duraciones || null;
+        palabrasAlineadas = alineado?.palabras || null;
+      } catch (e) {
+        console.warn(`  ⚠️ No se pudo alinear el audio con Whisper (${e.message}), subtítulos sin timing real`);
+      }
+    }
+
+    audiosPendientes.set(audioToken, { path: audioPath, duracion, duracionesReales, palabrasAlineadas });
 
     job.audioToken = audioToken;
     job.duracion = duracion;
@@ -483,6 +506,7 @@ app.post('/api/upload-audio', audioUpload.single('audioFile'), async (req, res) 
       audioToken,
       audioUrl: `/api/audio/${audioToken}`,
       duracion,
+      timingReal: Boolean(palabrasAlineadas),
     });
   } catch (error) {
     console.error('Error en /api/upload-audio:', error.message);
@@ -506,7 +530,12 @@ app.get('/api/audio/:token', (req, res) => {
 // transición activa necesita `transicionDur` segundos EXTRA de metraje fuente para la cola de
 // mezcla (ver el comentario largo en video.js/renderizarConTransiciones) — sin bajar el tope acá,
 // duracion+cola se pasaría del límite legal de 3s por clip. Portado del repo principal.
-async function prepararClips(job, clipMax = undefined) {
+// duracionesReales opcional: mismo timing real (Whisper) que usan los subtítulos — sin pasarlo
+// acá, el CORTE de los clips seguiría por % de caracteres mientras los subtítulos usan timing
+// real, dos relojes distintos que se desincronizan entre sí (la razón de ser de esta función
+// compartida en el repo principal: "misma línea de tiempo para el corte de video y para los
+// subtítulos, nunca dos relojes distintos").
+async function prepararClips(job, clipMax = undefined, duracionesReales = null) {
   const famosos = [...new Set(job.fragments.map(f => f.famoso))];
   const inventario = {};
   for (const famoso of famosos) {
@@ -515,9 +544,7 @@ async function prepararClips(job, clipMax = undefined) {
     inventario[famoso] = await drive.listarVideos(folderId);
   }
 
-  const plan = clipMax
-    ? seleccion.planificarClips(job.fragments, job.duracion, inventario, null, clipMax)
-    : seleccion.planificarClips(job.fragments, job.duracion, inventario);
+  const plan = seleccion.planificarClips(job.fragments, job.duracion, inventario, duracionesReales, clipMax || seleccion.CLIP_MAX);
 
   const archivos = {};
   for (const clip of plan) {
@@ -550,11 +577,35 @@ app.post('/api/generate-video', async (req, res) => {
     const transicionActiva = (efectos.transicion || 'ninguno') !== 'ninguno';
     const transicionDur = Math.min(0.6, Math.max(0.1, Number(efectos.transicionDur) || 0.35));
     const clipMaxEfectivo = transicionActiva ? Math.max(0.8, seleccion.CLIP_MAX - transicionDur) : undefined;
-    const { plan, archivos } = await prepararClips(job, clipMaxEfectivo);
+    const { plan, archivos } = await prepararClips(job, clipMaxEfectivo, audio.duracionesReales);
 
     // Cartel de portada (Paso 6): el navegador ya lo dibujó en un <canvas> y manda el PNG EXACTO
     // que el usuario vio — acá solo se guarda y se superpone, nunca se re-dibuja (ver portada.js).
     const cartelPath = guardarCartelPNG(efectos?.cartelPNG, jobId);
+
+    // Subtítulos: palabra por palabra resaltada, timing real si /api/upload-audio pudo alinear
+    // con Whisper (ver tiempos.js/transcripcion.js); si no, seleccion.tiemposPorFragmento() cae
+    // sola al reparto por % de caracteres. Opt-out con efectos.subtitulos===false. Nunca aborta
+    // el render: si algo falla generando el .ass, el video sale igual, sin subtítulos.
+    let subsPath = null;
+    let fuentesDir = null;
+    if (efectos?.subtitulos !== false) {
+      try {
+        const tiemposFragmentos = seleccion.tiemposPorFragmento(job.fragments, audio.duracion, audio.duracionesReales);
+        const fuenteElegida = efectos?.subtitulosFuente || subtitulos.FUENTE_DEFAULT;
+        subsPath = subtitulos.generarASS(job.fragments, tiemposFragmentos, audio.palabrasAlineadas, {
+          jobId,
+          tempDir: TEMP_DIR,
+          fuente: fuenteElegida,
+          tamano: Number.isFinite(efectos?.subtitulosTamano) ? efectos.subtitulosTamano : undefined,
+          marginV: Number.isFinite(efectos?.subtitulosMarginV) ? efectos.subtitulosMarginV : undefined,
+        });
+        fuentesDir = await subtitulos.obtenerCarpetaFuentes(fuenteElegida);
+      } catch (e) {
+        console.warn(`  ⚠️ [${jobId}] Subtítulos no se pudieron generar (${e.message}), el video sale sin ellos`);
+        subsPath = null;
+      }
+    }
 
     const resultado = await video.montarVideoPlan(plan, archivos, audio.path, jobId, {
       zoom: efectos.zoom || 'ninguno',
@@ -564,6 +615,8 @@ app.post('/api/generate-video', async (req, res) => {
       transicionDur,
       transicionTipo: efectos.transicionTipo,
       cartelPath,
+      subsPath,
+      fuentesDir,
     });
 
     const videoName = `${job.nombreCorto || 'video'}_${Date.now()}.mp4`.replace(/[^\w.\-]/g, '_');

@@ -569,12 +569,17 @@ async function handleGenerateVideo() {
             zoomPct: Number(document.getElementById('zoom-pct')?.value) || 20,
             espejo: document.getElementById('efecto-espejo')?.value || 'ninguno',
         };
-        // Transiciones y cartel solo aplican en modo Video — en Insumos cada clip sale suelto
-        // para edición manual (sin mezcla con el vecino, y sin un "frame 0" único para el cartel).
+        // Transiciones, subtítulos y cartel solo aplican en modo Video — en Insumos cada clip
+        // sale suelto para edición manual (sin mezcla con el vecino, sin timeline única sobre la
+        // que quemar subtítulos, y sin un "frame 0" único para el cartel).
         if (MODO === 'video') {
             efectos.transicion = document.getElementById('efecto-transicion')?.value || 'ninguno';
             efectos.transicionTipo = tiposTransicionElegidos();
             efectos.transicionDur = Number(document.getElementById('transicion-dur')?.value) || 0.35;
+            efectos.subtitulos = document.getElementById('efecto-subtitulos')?.checked ?? true;
+            efectos.subtitulosFuente = subsFuente;
+            efectos.subtitulosTamano = subsTamano;
+            efectos.subtitulosMarginV = subsMarginV;
             // PNG EXACTO que se ve en la previa del Paso 6 (data URL) — el server no lo re-dibuja,
             // lo superpone tal cual en el frame 0 y en el JPG.
             const cartelPNG = await exportarCartelPNG();
@@ -1002,7 +1007,7 @@ async function cargarFuentesEnSelect(selectId) {
     const select = document.getElementById(selectId);
     if (!select) return;
     try {
-        const { fuentes, default: porDefecto } = await apiCall('/fuentes-cartel', 'GET');
+        const { fuentes, default: porDefecto } = await apiCall('/fuentes-subtitulos', 'GET');
         select.innerHTML = fuentes.map(f => `<option value="${f.clave}">${f.familia}</option>`).join('');
         select.value = porDefecto || fuentes[0]?.clave || 'anton';
     } catch (e) {
@@ -1065,6 +1070,196 @@ async function generarPortada() {
     }
 }
 
+// ---- Vista previa de subtítulos: canvas real 1080x1920 con cuadrícula y zonas seguras ----
+// Portado de farandula-video-generator (repo hermano, 2026-08-16). Diferencia honesta con el
+// cartel de portada: ese canvas ES el archivo que se superpone (idéntico por construcción). Acá
+// NO — los subtítulos los quema libass desde el .ass, con su propio motor de texto. La geometría
+// (posición, tamaño, márgenes) es fiel; el trazo exacto de cada letra puede variar un pelo.
+const SUBS_PLAYRES_Y = 1920;
+const SUBS_PLAYRES_X = 1080;
+const SUBS_ANCHO_UTIL = SUBS_PLAYRES_X - 60 - 60;
+let subsTamano = 210;
+let subsMarginV = 606;
+let subsFuente = 'bangers';
+
+// Zonas que cada app tapa con su propia interfaz — mismas medidas que el repo principal (leídas
+// de las plantillas oficiales de zona segura 9:16 de cada app, calibradas contra 1080x1920).
+// Aproximadas (±10px, las plantillas cambian entre versiones). Único lugar donde viven.
+const SUBS_ZONAS_APPS = [
+    { nombre: 'TikTok',          color: '#ff2d55', arriba: 181, abajo: 292, derecha: 174 },
+    { nombre: 'YouTube Shorts',  color: '#ff4444', arriba: 181, abajo: 195, derecha: 169 },
+    { nombre: 'Facebook Reels',  color: '#4a9eff', arriba: 191, abajo: 302, derecha: 164 },
+];
+const SUBS_CORTE_LATERAL = 48;
+const SUBS_LIMITE_ARRIBA = Math.max(...SUBS_ZONAS_APPS.map(z => z.arriba));
+const SUBS_LIMITE_ABAJO = Math.max(...SUBS_ZONAS_APPS.map(z => z.abajo));
+const SUBS_LIMITE_DERECHA = Math.max(...SUBS_ZONAS_APPS.map(z => z.derecha));
+
+// Mapeo clave del catálogo (subtitulos.js) → familia/peso CSS del <link> de Google Fonts en
+// index.html — SOLO para que la previa se vea con la tipografía real; el render final sigue
+// self-hosted con ffmpeg (fontsdir), esto no lo toca.
+const SUBS_FUENTES_CSS = {
+    anton:     { family: 'Anton',         weight: 400 },
+    poppins:   { family: 'Poppins',       weight: 800 },
+    bebas:     { family: 'Bebas Neue',    weight: 400 },
+    archivo:   { family: 'Archivo Black', weight: 400 },
+    bangers:   { family: 'Bangers',       weight: 400 },
+    righteous: { family: 'Righteous',     weight: 400 },
+    passion:   { family: 'Passion One',   weight: 900 },
+    kanit:     { family: 'Kanit',         weight: 800 },
+    luckiest:  { family: 'Luckiest Guy',  weight: 400 },
+};
+
+async function cargarFuentesSubtitulos() {
+    const select = document.getElementById('subs-fuente');
+    if (!select) return;
+    try {
+        const { fuentes, default: porDefecto } = await apiCall('/fuentes-subtitulos', 'GET');
+        select.innerHTML = fuentes.map(f => `<option value="${f.clave}">${f.familia}</option>`).join('');
+        subsFuente = porDefecto || fuentes[0]?.clave || 'anton';
+        select.value = subsFuente;
+    } catch (e) {
+        console.warn('No se pudo cargar el catálogo de tipografías, se usa Bangers por defecto:', e.message);
+    }
+}
+
+function subsDibujarCuadricula(ctx) {
+    const pasoX = SUBS_PLAYRES_X / 10;
+    const pasoY = SUBS_PLAYRES_Y / 10;
+    ctx.lineWidth = 2;
+    for (let i = 1; i < 10; i++) {
+        const tercioV = i === 3 || i === 7;
+        ctx.strokeStyle = tercioV ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+        ctx.beginPath(); ctx.moveTo(i * pasoX, 0); ctx.lineTo(i * pasoX, SUBS_PLAYRES_Y); ctx.stroke();
+        ctx.strokeStyle = tercioV ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+        ctx.beginPath(); ctx.moveTo(0, i * pasoY); ctx.lineTo(SUBS_PLAYRES_X, i * pasoY); ctx.stroke();
+    }
+}
+
+function subsDibujarZonasSeguras(ctx) {
+    ctx.fillStyle = 'rgba(255,60,60,0.16)';
+    ctx.fillRect(0, 0, SUBS_PLAYRES_X, SUBS_LIMITE_ARRIBA);
+    ctx.fillRect(0, SUBS_PLAYRES_Y - SUBS_LIMITE_ABAJO, SUBS_PLAYRES_X, SUBS_LIMITE_ABAJO);
+    ctx.fillRect(SUBS_PLAYRES_X - SUBS_LIMITE_DERECHA, SUBS_LIMITE_ARRIBA,
+                 SUBS_LIMITE_DERECHA, SUBS_PLAYRES_Y - SUBS_LIMITE_ARRIBA - SUBS_LIMITE_ABAJO);
+
+    ctx.fillStyle = 'rgba(190,20,90,0.38)';
+    ctx.fillRect(0, 0, SUBS_CORTE_LATERAL, SUBS_PLAYRES_Y);
+    ctx.fillRect(SUBS_PLAYRES_X - SUBS_CORTE_LATERAL, 0, SUBS_CORTE_LATERAL, SUBS_PLAYRES_Y);
+
+    ctx.setLineDash([18, 14]);
+    ctx.lineWidth = 4;
+    for (const z of SUBS_ZONAS_APPS) {
+        ctx.strokeStyle = z.color;
+        ctx.beginPath();
+        ctx.moveTo(0, SUBS_PLAYRES_Y - z.abajo);
+        ctx.lineTo(SUBS_PLAYRES_X - z.derecha, SUBS_PLAYRES_Y - z.abajo);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, z.arriba);
+        ctx.lineTo(SUBS_PLAYRES_X - z.derecha, z.arriba);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(SUBS_PLAYRES_X - z.derecha, z.arriba);
+        ctx.lineTo(SUBS_PLAYRES_X - z.derecha, SUBS_PLAYRES_Y - z.abajo);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+}
+
+function dibujarPreviewSubs(canvas) {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    canvas.width = SUBS_PLAYRES_X;
+    canvas.height = SUBS_PLAYRES_Y;
+
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, SUBS_PLAYRES_X, SUBS_PLAYRES_Y);
+    subsDibujarCuadricula(ctx);
+    subsDibujarZonasSeguras(ctx);
+
+    const f = SUBS_FUENTES_CSS[subsFuente] || SUBS_FUENTES_CSS.anton;
+    let tam = subsTamano;
+    ctx.font = `${f.weight} ${tam}px '${f.family}', sans-serif`;
+    const ancho = ctx.measureText('PALABRA').width;
+    if (ancho > SUBS_ANCHO_UTIL) {
+        tam = Math.max(20, Math.floor(tam * (SUBS_ANCHO_UTIL / ancho)));
+        ctx.font = `${f.weight} ${tam}px '${f.family}', sans-serif`;
+    }
+
+    const yTexto = SUBS_PLAYRES_Y - subsMarginV;
+    ctx.strokeStyle = 'rgba(247,194,4,0.75)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 10]);
+    ctx.beginPath(); ctx.moveTo(0, yTexto); ctx.lineTo(SUBS_PLAYRES_X, yTexto); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = Math.max(4, tam * 0.06);
+    ctx.strokeText('PALABRA', SUBS_PLAYRES_X / 2, yTexto);
+    ctx.fillStyle = '#fff';
+    ctx.fillText('PALABRA', SUBS_PLAYRES_X / 2, yTexto);
+}
+
+function initSubsPreview() {
+    const slider = document.getElementById('subs-tamano');
+    const numInput = document.getElementById('subs-tamano-num');
+    const preview = document.getElementById('subs-preview');
+    const canvas = document.getElementById('subs-preview-canvas');
+    const selectFuente = document.getElementById('subs-fuente');
+    const lecturaPos = document.getElementById('subs-pos-valor');
+    if (!slider || !preview || !canvas) return;
+
+    const repintar = () => {
+        dibujarPreviewSubs(canvas);
+        if (lecturaPos) lecturaPos.textContent = subsMarginV;
+    };
+
+    const fijarTamano = (nuevo) => {
+        if (!Number.isFinite(nuevo)) return;
+        subsTamano = Math.min(360, Math.max(80, Math.round(nuevo)));
+        slider.value = subsTamano;
+        if (numInput) numInput.value = subsTamano;
+        repintar();
+    };
+
+    slider.addEventListener('input', () => fijarTamano(Number(slider.value)));
+    numInput?.addEventListener('input', () => {
+        if (numInput.value === '') return;
+        fijarTamano(Number(numInput.value));
+    });
+    numInput?.addEventListener('blur', () => fijarTamano(subsTamano));
+
+    selectFuente?.addEventListener('change', async () => {
+        subsFuente = selectFuente.value;
+        await asegurarFuenteCargada(subsFuente);
+        repintar();
+    });
+
+    let arrastrando = false;
+    const moverA = (clientY) => {
+        const rect = preview.getBoundingClientRect();
+        const desdeAbajoPx = Math.max(0, Math.min(rect.height, rect.bottom - clientY));
+        subsMarginV = Math.round((desdeAbajoPx / rect.height) * SUBS_PLAYRES_Y);
+        repintar();
+    };
+    preview.addEventListener('pointerdown', e => {
+        arrastrando = true;
+        preview.setPointerCapture(e.pointerId);
+        moverA(e.clientY);
+    });
+    preview.addEventListener('pointermove', e => { if (arrastrando) moverA(e.clientY); });
+    preview.addEventListener('pointerup', () => { arrastrando = false; });
+    preview.addEventListener('pointercancel', () => { arrastrando = false; });
+
+    if (numInput) numInput.value = subsTamano;
+    asegurarFuenteCargada(subsFuente).then(repintar);
+    repintar();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     if (!requireLogin()) return;
 
@@ -1078,6 +1273,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (contPasos) contPasos.addEventListener('scroll', actualizarPasosIndicador);
     actualizarPasosIndicador();
     cargarFuentesEnSelect('portada-fuente').then(initPortadaDiseno);
+    cargarFuentesSubtitulos().then(initSubsPreview);
     initPortadaTamano();
     initPortadaCaja();
 });
