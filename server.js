@@ -833,6 +833,27 @@ app.get('/api/download-insumos/:jobId', (req, res) => {
 });
 
 // ==================== HISTORIAL ====================
+// Devuelve un job completo para retomarlo desde el historial. Antes no existía: las tarjetas del
+// historial eran texto muerto (fecha + estado) sin forma de abrir nada, así que un proceso a
+// medio hacer no se podía continuar -- había que rehacerlo desde el Paso 1. Ahora que el estado
+// del job vive en Postgres (ver job_state), recuperarlo sí sirve.
+//
+// Los ARCHIVOS no se recuperan (disco efímero): por eso se devuelve `audioDisponible`, para que
+// la UI sepa si puede saltar el Paso 5 o si hay que volver a subir la locución.
+app.get('/api/job/:jobId', async (req, res) => {
+  try {
+    const job = await obtenerJob(req.params.jobId);
+    if (!job || job.userId !== req.user.userId) {
+      return res.status(404).json({ error: 'Proceso no encontrado' });
+    }
+    const audio = job.audioToken ? audiosPendientes.get(job.audioToken) : null;
+    const audioDisponible = Boolean(audio && fs.existsSync(audio.path));
+    res.json({ job, audioDisponible });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get('/api/history', async (req, res) => {
   try {
     res.json({ history: await db.getJobHistory(req.user.userId) });

@@ -744,16 +744,109 @@ async function cargarHistorial() {
         items.forEach(item => {
             const div = document.createElement('div');
             div.className = 'historial-item';
-            div.style.cssText = 'border:2px solid #000;border-radius:8px;padding:10px 12px;margin-bottom:8px;';
+            div.style.cssText = 'border:2px solid #000;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;';
+            div.title = 'Clic para retomar este proceso';
             const fecha = new Date(item.fecha).toLocaleString();
             div.innerHTML = `
                 <div style="font-weight:900;font-size:0.85rem;">${ESTADO_HISTORIAL[item.status] || item.status}</div>
                 <div style="color:#666;font-size:0.75rem;margin-top:3px;">${fecha}${item.duracion ? ` · ${Math.round(item.duracion)}s` : ''}${item.video_name ? ` · ${item.video_name}` : ''}</div>
+                <div style="color:#0a7;font-size:0.72rem;font-weight:800;margin-top:5px;">↩︎ Retomar</div>
             `;
+            div.onclick = () => retomarProceso(item.job_id);
             cont.appendChild(div);
         });
     } catch (error) {
         cont.innerHTML = `<p style="color:#c0392b;">Error cargando historial: ${error.message}</p>`;
+    }
+}
+
+// Retoma un proceso del historial: trae el job guardado y deja la UI exactamente en el paso
+// donde quedó, sin rehacer nada. Antes las tarjetas del historial no hacían nada (eran texto),
+// así que un proceso a medias se perdía. Esto solo es posible desde que el estado del job vive
+// en Postgres y no solo en memoria del contenedor.
+async function retomarProceso(jobId) {
+    if (!jobId) return;
+    showProgress('↩︎ Retomando proceso...');
+    try {
+        const { job, audioDisponible } = await apiCall(`/job/${jobId}`, 'GET');
+
+        // Limpiar lo que hubiera del proceso anterior antes de pintar el nuevo: sin esto,
+        // retomar un job viejo dejaba visibles el guion/asignaciones/audio del que estaba
+        // abierto antes.
+        lockFrom('script-section');
+
+        // Estado
+        state.jobId = job.jobId;
+        state.sesgo = job.sesgo || 'neutral';
+        state.fuentes = job.fuentes || [];
+        state.sourceData = job;
+        state.guion = job.guion || null;
+        state.fragments = job.fragments || null;
+        state.carpetas = job.carpetas || [];
+        state.audioToken = audioDisponible ? job.audioToken : null;
+
+        // Paso 1: lectura
+        document.getElementById('res-titulo').textContent = job.titulo || '';
+        document.getElementById('res-descripcion').textContent = job.descripcion || '';
+        document.getElementById('res-cronica').textContent = job.cronica || '';
+        revealLectura();
+        renderFuentesLista();
+        setStepStatus('fuente-section', 'done');
+
+        if (job.paso === 'lectura') {
+            setStepStatus('script-section', 'active');
+            log('↩︎ Proceso retomado: elegí un ángulo para continuar');
+            hideProgress();
+            return;
+        }
+
+        // Paso 2-3: guion
+        document.getElementById('guion-editor').value = job.guion || '';
+        setStepStatus('script-section', 'done');
+        if (job.paso === 'guion') {
+            setStepStatus('guion-section', 'active');
+            log('↩︎ Proceso retomado: revisá y aprobá el guion');
+            hideProgress();
+            return;
+        }
+
+        // Paso 4: asignaciones
+        setStepStatus('guion-section', 'done');
+        if (state.fragments) renderAsignaciones(false, job.protagonista);
+        if (job.paso === 'fragmentos') {
+            setStepStatus('revision-section', 'active');
+            log('↩︎ Proceso retomado: revisá las asignaciones de carpetas');
+            hideProgress();
+            return;
+        }
+
+        // Paso 5: audio. El MP3 vive en disco efímero: si el contenedor se reinició ya no está
+        // y hay que volver a subirlo, aunque todo lo anterior se conserve.
+        setStepStatus('revision-section', 'done');
+        if (!audioDisponible) {
+            setStepStatus('audio-section', 'active');
+            log('↩︎ Proceso retomado. ⚠️ La locución ya no está en el servidor (se reinició): subila de nuevo.');
+            hideProgress();
+            return;
+        }
+        // Mismo tratamiento que tras subir el audio (ver handleUploadAudio): la ruta es relativa,
+        // hay que mostrar el reproductor (nace con display:none) y habilitar el botón de aprobar.
+        const player = document.getElementById('audio-player');
+        if (player) {
+            player.src = `/api/audio/${job.audioToken}?t=${Date.now()}`;
+            player.style.display = 'block';
+            player.load();
+            renderProductoAudio(player.src);
+        }
+        const infoAudio = document.getElementById('audio-info');
+        if (infoAudio && job.duracion) infoAudio.textContent = `Duración: ${Math.round(job.duracion)}s`;
+        document.getElementById('btn-approve-audio')?.classList.remove('hidden');
+        setStepStatus('audio-section', 'done');
+        setStepStatus('destination-section', 'active');
+        log('↩︎ Proceso retomado: listo para generar');
+        hideProgress();
+    } catch (error) {
+        mostrarError(`No se pudo retomar el proceso: ${error.message}`, () => retomarProceso(jobId), null);
     }
 }
 
