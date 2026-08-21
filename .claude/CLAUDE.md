@@ -1,5 +1,38 @@
 # Claude Code Setup — Farandula Video Family
 
+## 2026-08-21 — DESPLEGADO a Railway (por fin) + fix de las 200 carpetas
+
+Ya está **en producción**: **https://farandula-video-family-production.up.railway.app**
+
+- Proyecto Railway: **`fortunate-unity`** (NO `generous-empathy`, que es el del repo principal).
+  Ese proyecto ya existía con un Postgres provisionado y nada más; ahora tiene 2 servicios:
+  `Postgres` y `farandula-video-family`.
+- Variables copiadas del servicio de producción del repo principal: `GOOGLE_CREDENTIALS_JSON`,
+  `GOOGLE_DRIVE_FOLDER_ID`, `GEMINI_API_KEY`. Más `JWT_SECRET` (generado nuevo),
+  `NODE_ENV=production`, y `DATABASE_URL` como **referencia** de Railway
+  (`${{Postgres.DATABASE_URL}}`, no el valor literal — si Railway rota la credencial sigue
+  apuntando bien).
+- **`OPENAI_API_KEY` NO está puesta, a propósito** (decisión explícita del usuario: "omite los
+  subtítulos y despliega"). El video sale igual; los subtítulos usan reparto estimado por % de
+  caracteres en vez del timing real de Whisper. Poner la key cuando se quiera activar eso.
+- El esquema de la base se crea solo al arrancar (`db.js initializeDatabase()`, CREATE TABLE IF
+  NOT EXISTS) — confirmado en el log del primer arranque.
+- Nadie tiene cuenta todavía: cada hermano se registra desde la pantalla de "Registrarse".
+
+**Bug real encontrado al desplegar** (commit `911d927`): `drive.js` pedía a Drive `pageSize: 200`
+sin bucle de paginación, y el usuario ya tiene **264** carpetas de famosos — las últimas ~64
+eran invisibles para esta app, EN SILENCIO (sin error ni warning). El repo principal ya usaba
+`pageSize: 1000`; se igualó acá, también en `listarVideos`. Verificado contra Drive real: antes
+200 carpetas, después 264.
+
+⚠️ **Incidente al desplegar, para no repetirlo**: `railway up` despliega al servicio LINKEADO, y
+al hacer `railway link` sobre este proyecto la CLI auto-seleccionó el servicio **Postgres**
+(era el único que existía). El primer `railway up` subió la app ENCIMA de la base de datos y la
+dejó `Crashed`. Se recuperó desde el dashboard (Deployments → el deploy viejo de
+`postgres-ssl:18` → Redeploy), con el volumen intacto, sin pérdida de datos. **Antes de cada
+`railway up`: correr `railway status` y confirmar el "Linked service", o pasar `--service
+<nombre>` explícito** (que es como quedó documentado el comando de deploy acá).
+
 Repo hermano de `farandula-video-generator` (mismo dueño, mismo Drive de solo lectura para
 `Famosos/`, mismo `gemini.js`/`seleccion.js` de base) — versión para los hermanos del usuario:
 sin ElevenLabs (el usuario sube su propio MP3), sin escritura a Drive (todo se descarga local,
