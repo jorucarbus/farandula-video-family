@@ -34,10 +34,63 @@ async function initializeDatabase() {
       )
     `);
 
+    // Estado del job en curso (guion, fragmentos, asignaciones...). Los jobs vivian SOLO en un
+    // Map en memoria, asi que cualquier reinicio del contenedor -- un deploy, un crash, el
+    // sleep de Railway -- los borraba y el usuario recibia "Job no encontrado" a mitad del
+    // flujo, teniendo que empezar de cero (reportado 2026-08-21). Se persiste acá para
+    // sobrevivir reinicios. Los ARCHIVOS (audio subido, video renderizado) siguen en el disco
+    // efimero y esos si se pierden: tras un reinicio hay que volver a subir la locucion, pero
+    // fuente/guion/fragmentos se conservan.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS job_state (
+        job_id VARCHAR(255) PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
     console.log('✅ Database schema initialized');
   } catch (error) {
     console.error('❌ Database initialization error:', error.message);
     throw error;
+  }
+}
+
+// ---- Estado del job en curso (sobrevive reinicios del contenedor) ----
+// Fire-and-forget a proposito: si Postgres falla, el job sigue vivo en memoria y el flujo
+// continua igual -- solo se pierde la red de seguridad, no la sesion del usuario.
+async function guardarJobState(job) {
+  if (!job || !job.jobId) return;
+  try {
+    await pool.query(
+      `INSERT INTO job_state (job_id, user_id, data, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (job_id) DO UPDATE SET data = $3, updated_at = NOW()`,
+      [job.jobId, job.userId || null, JSON.stringify(job)]
+    );
+  } catch (e) {
+    console.warn(`  ⚠️ No se pudo persistir el job ${job.jobId}: ${e.message}`);
+  }
+}
+
+async function cargarJobState(jobId) {
+  try {
+    const res = await pool.query('SELECT data FROM job_state WHERE job_id = $1', [jobId]);
+    return res.rows[0] ? res.rows[0].data : null;
+  } catch (e) {
+    console.warn(`  ⚠️ No se pudo leer el job ${jobId} de la base: ${e.message}`);
+    return null;
+  }
+}
+
+// Limpieza: los jobs viejos no sirven (sus archivos ya los borro el cron de temporales).
+async function limpiarJobStateViejos(horas = 72) {
+  try {
+    const res = await pool.query(`DELETE FROM job_state WHERE updated_at < NOW() - INTERVAL '${Number(horas)} hours'`);
+    if (res.rowCount) console.log(`🗑️  Limpieza: ${res.rowCount} job(s) viejos borrados de job_state`);
+  } catch (e) {
+    console.warn(`  ⚠️ No se pudo limpiar job_state: ${e.message}`);
   }
 }
 
@@ -154,4 +207,8 @@ module.exports = {
   getJobHistory,
   getJobHistoryItem,
   updateJobHistory,
+  // Estado del job en curso (sobrevive reinicios del contenedor)
+  guardarJobState,
+  cargarJobState,
+  limpiarJobStateViejos,
 };

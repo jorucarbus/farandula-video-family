@@ -109,8 +109,34 @@ app.use('/api', (req, res, next) => {
 });
 
 // ==================== ESTADO EN MEMORIA ====================
-const jobs = new Map();           // jobId -> job
+const jobs = new Map();           // jobId -> job (cache caliente; la verdad durable vive en Postgres)
 const audiosPendientes = new Map(); // audioToken -> {path, duracion}
+
+// El Map de arriba se vacia en CADA reinicio del contenedor (deploy, crash, sleep de Railway),
+// y eso le daba al usuario "Job no encontrado" a mitad del flujo, obligandolo a empezar de cero
+// (reportado 2026-08-21). Estas dos funciones lo respaldan en Postgres -- que esta app ya tiene
+// para el login/historial, asi que no hace falta infraestructura nueva.
+//
+// OJO con lo que NO recupera: los ARCHIVOS (la locucion subida, el video renderizado, el cartel)
+// viven en el disco efimero y se pierden igual. Tras un reinicio, fuente/guion/fragmentos/
+// asignaciones vuelven intactos, pero hay que volver a subir el audio.
+async function obtenerJob(jobId) {
+  if (!jobId) return null;
+  const enMemoria = jobs.get(jobId);
+  if (enMemoria) return enMemoria;
+  const guardado = await db.cargarJobState(jobId);
+  if (!guardado) return null;
+  jobs.set(jobId, guardado);
+  console.log(`  ♻️  Job ${jobId} recuperado desde la base (el contenedor se reinicio)`);
+  return guardado;
+}
+
+// Guarda el estado del job. Fire-and-forget: si Postgres falla, el flujo sigue igual.
+function persistirJob(job) {
+  if (!job) return;
+  jobs.set(job.jobId, job);
+  db.guardarJobState(job).catch(() => {});
+}
 
 // Guarda en disco el PNG del cartel que mandó el navegador (data URL "data:image/png;base64,...").
 // Portado de farandula-video-generator: el cartel se dibuja UNA vez en el navegador (canvas) y
@@ -306,7 +332,7 @@ app.post('/api/read', async (req, res) => {
     const { type, content, sesgo, jobId: jobIdExistente } = req.body;
     if (!type || !content) throw new Error('Faltan type o content');
 
-    let job = jobIdExistente ? jobs.get(jobIdExistente) : null;
+    let job = jobIdExistente ? await obtenerJob(jobIdExistente) : null;
     if (jobIdExistente && (!job || job.userId !== req.user.userId)) {
       return res.status(404).json({ error: 'Job no encontrado' });
     }
@@ -344,7 +370,7 @@ app.post('/api/read', async (req, res) => {
       await db.addJobToHistory(req.user.userId, jobId, null, null, null, 'lectura');
     }
     Object.assign(job, { sesgo: sesgoElegido, fuentes: todasLasFuentes, ...result });
-    jobs.set(job.jobId, job);
+    persistirJob(job);
 
     res.json({
       jobId: job.jobId,
@@ -372,7 +398,7 @@ app.post('/api/resintetizar', async (req, res) => {
   try {
     const { jobId, sesgo } = req.body;
     if (!jobId) return res.status(400).json({ error: 'Falta jobId' });
-    const job = jobs.get(jobId);
+    const job = await obtenerJob(jobId);
     if (!job || job.userId !== req.user.userId) return res.status(404).json({ error: 'Job no encontrado' });
     if (!job.fuentes || job.fuentes.length === 0) {
       return res.status(400).json({ error: 'Este job no tiene fuentes cacheadas — hay que releer la fuente' });
@@ -381,7 +407,7 @@ app.post('/api/resintetizar', async (req, res) => {
     const sesgoElegido = ['favor', 'contra', 'neutral'].includes(sesgo) ? sesgo : 'neutral';
     const result = await gemini.sintetizarCronica(job.fuentes.map(f => f.acta), sesgoElegido);
     Object.assign(job, { sesgo: sesgoElegido, ...result });
-    jobs.set(jobId, job);
+    persistirJob(job);
 
     res.json({
       jobId,
@@ -403,12 +429,13 @@ app.post('/api/resintetizar', async (req, res) => {
 app.post('/api/generate-script', async (req, res) => {
   try {
     const { jobId, cronica, angle, angleContent } = req.body;
-    const job = jobs.get(jobId);
-    if (!job) throw new Error('Job no encontrado');
+    const job = await obtenerJob(jobId);
+    if (!job || job.userId !== req.user.userId) throw new Error('Job no encontrado');
 
     const script = await gemini.generarGuion(cronica || job.cronica, angle, angleContent);
     job.guion = script;
     job.paso = 'guion';
+    persistirJob(job);
 
     const palabras = script.split(/\s+/).filter(Boolean).length;
     res.json({ jobId, script, palabras });
@@ -422,8 +449,8 @@ app.post('/api/generate-script', async (req, res) => {
 app.post('/api/fragment', async (req, res) => {
   try {
     const { jobId, script } = req.body;
-    const job = jobs.get(jobId);
-    if (!job) throw new Error('Job no encontrado');
+    const job = await obtenerJob(jobId);
+    if (!job || job.userId !== req.user.userId) throw new Error('Job no encontrado');
 
     const carpetasMap = await drive.obtenerCarpetasFamosos();
     const nombresCarpetas = Object.keys(carpetasMap);
@@ -438,6 +465,7 @@ app.post('/api/fragment', async (req, res) => {
     job.carpetasMap = carpetasMap;
     job.guion = script || job.guion;
     job.paso = 'fragmentos';
+    persistirJob(job);
 
     // Si los fragmentos no reconstruyen el guion, los tiempos de TODOS los clips quedan
     // corridos. No aborta (el video igual sale) pero el usuario tiene que enterarse.
@@ -465,8 +493,8 @@ app.post('/api/upload-audio', audioUpload.single('audioFile'), async (req, res) 
     const { jobId } = req.body;
     if (!req.file) throw new Error('No se recibió archivo de audio');
 
-    const job = jobs.get(jobId);
-    if (!job) {
+    const job = await obtenerJob(jobId);
+    if (!job || job.userId !== req.user.userId) {
       fs.unlinkSync(req.file.path);
       throw new Error('Job no encontrado');
     }
@@ -532,6 +560,7 @@ app.post('/api/upload-audio', audioUpload.single('audioFile'), async (req, res) 
     job.audioToken = audioToken;
     job.duracion = duracion;
     job.paso = 'audio';
+    persistirJob(job);
 
     res.json({
       audioToken,
@@ -590,8 +619,8 @@ async function prepararClips(job, clipMax = undefined, duracionesReales = null) 
 app.post('/api/generate-video', async (req, res) => {
   try {
     const { jobId, efectos = {} } = req.body;
-    const job = jobs.get(jobId);
-    if (!job) throw new Error('Job no encontrado');
+    const job = await obtenerJob(jobId);
+    if (!job || job.userId !== req.user.userId) throw new Error('Job no encontrado');
     if (!job.fragments || !job.fragments.length) throw new Error('No hay fragmentos asignados');
     const audio = audiosPendientes.get(job.audioToken);
     if (!audio) throw new Error('No hay audio aprobado - sube un audio primero');
@@ -658,6 +687,7 @@ app.post('/api/generate-video', async (req, res) => {
     job.videoName = videoName;
     job.cartelPath = cartelPath;
     job.paso = 'completado';
+    persistirJob(job);
 
     video.limpiarTemporales(jobId);
 
@@ -692,8 +722,8 @@ app.get('/api/download-video/:jobId', (req, res) => {
 app.post('/api/exportar', async (req, res) => {
   try {
     const { jobId, efectos = {} } = req.body;
-    const job = jobs.get(jobId);
-    if (!job) throw new Error('Job no encontrado');
+    const job = await obtenerJob(jobId);
+    if (!job || job.userId !== req.user.userId) throw new Error('Job no encontrado');
     if (!job.fragments || !job.fragments.length) throw new Error('No hay fragmentos asignados');
     const audio = audiosPendientes.get(job.audioToken);
     if (!audio) throw new Error('No hay audio aprobado - sube un audio primero');
@@ -772,6 +802,7 @@ app.post('/api/exportar', async (req, res) => {
     job.zipPath = zipPath;
     job.zipName = zipName;
     job.paso = 'completado';
+    persistirJob(job);
 
     fs.rmSync(jobDir, { recursive: true, force: true });
     video.limpiarTemporales(jobId);
@@ -817,6 +848,11 @@ async function startup() {
     if (!connected) throw new Error('No se pudo conectar a la base de datos');
     await db.initializeDatabase();
     cleanupCron.start();
+    // Los jobs guardados de mas de 3 dias ya no sirven: sus archivos los borro hace rato el
+    // cron de temporales, asi que recuperarlos solo daria un job roto. Se limpian al arrancar
+    // y cada 6h, para que job_state no crezca sin limite.
+    db.limpiarJobStateViejos(72).catch(() => {});
+    setInterval(() => db.limpiarJobStateViejos(72).catch(() => {}), 6 * 60 * 60 * 1000);
 
     app.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
