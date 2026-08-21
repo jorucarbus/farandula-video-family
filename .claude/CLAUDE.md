@@ -32,6 +32,25 @@ padding) para que el corte de clips y los subtítulos usen el número del archiv
 usa. Límite de subida 50MB → 150MB, porque un WAV pesa ~10x el MP3 equivalente (~10MB/minuto) y
 el tope viejo dejaba fuera locuciones normales.
 
+**2026-08-21 — el panel de progreso nunca se veía** (commit `750b48d`). El usuario reportó "no
+sale la pantalla que indica qué procesos está haciendo". El panel existía y `showProgress()` lo
+activaba bien: el problema era de POSICIÓN. Vive al final de la columna "Productos", debajo del
+Historial, y `.scroll-snap-col` (la lista de historial) mide hasta `74vh` — así que en cualquier
+pantalla normal el panel quedaba por debajo del fold y había que scrollear la columna derecha
+hasta abajo para verlo. En la práctica: invisible. Fix: `.progress-section` pasa a
+`position: fixed` abajo, compacto (~117px en escritorio, 21% de pantalla en móvil, log de 90px),
+y solo aparece mientras hay un proceso en curso, así que no tapa el flujo el resto del tiempo.
+`showProgress`/`hideProgress` ponen y quitan `body.procesando`, que agrega padding al final del
+body para que la barra fija no tape el último bloque al scrollear; `mostrarError` también la
+activa (ese panel lleva los botones de reintentar). Verificado en navegador real en los tres
+estados (progreso / oculto / error) y en escritorio + móvil.
+
+⚠️ **Ojo si hay que volver a inspeccionar la UI de esta app**: `index.html` está detrás del
+login (`requireLogin()` redirige a `login.html` si no hay token, y `logout()` también redirige en
+cualquier 401), así que no se puede mirar el DOM sin sesión. Lo que funcionó acá sin crear
+cuenta: copiar `public/` al scratchpad, neutralizar en la COPIA las dos redirecciones, servirla
+con `python3 -m http.server` y mirar ahí. El repo nunca se toca.
+
 **Bug real encontrado al desplegar** (commit `911d927`): `drive.js` pedía a Drive `pageSize: 200`
 sin bucle de paginación, y el usuario ya tiene **264** carpetas de famosos — las últimas ~64
 eran invisibles para esta app, EN SILENCIO (sin error ni warning). El repo principal ya usaba
