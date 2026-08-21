@@ -41,15 +41,25 @@ app.use(express.static('public', {
   },
 }));
 
+// Formatos de audio aceptados para la locucion que sube el usuario. Antes solo MP3, pero la
+// gente graba con lo que tenga a mano (la grabadora de Windows da .m4a, Audacity exporta .wav,
+// un celular Android puede dar .ogg) y no tiene por que convertir a mano. Lo que NO sea mp3 se
+// transcodifica a mp3 al recibirlo (ver mas abajo): el resto del pipeline ya asume un .mp3 real
+// -- el archivo se guarda como `audio_<token>.mp3` pase lo que pase, asi que aceptar otro
+// formato sin convertirlo dejaba un archivo con extension mentirosa.
+const AUDIO_MIMES_OK = /^audio\/(mpeg|mp3|wav|x-wav|wave|x-pn-wav|mp4|m4a|x-m4a|aac|ogg|opus|webm|flac|x-flac)$/;
+
 const audioUpload = multer({
   dest: TEMP_DIR,
   fileFilter: (req, file, cb) => {
-    if (file.mimetype !== 'audio/mpeg' && file.mimetype !== 'audio/mp3') {
-      return cb(new Error('Solo se aceptan archivos MP3'));
+    if (!AUDIO_MIMES_OK.test(file.mimetype)) {
+      return cb(new Error(`Formato de audio no soportado (${file.mimetype}). Acepta MP3, WAV, M4A, AAC, OGG o FLAC.`));
     }
     cb(null, true);
   },
-  limits: { fileSize: 50 * 1024 * 1024 },
+  // 150MB: un WAV sin comprimir pesa ~10x lo que el mismo audio en MP3 (un minuto de WAV
+  // 44.1kHz estereo son ~10MB), asi que el tope viejo de 50MB dejaba fuera locuciones normales.
+  limits: { fileSize: 150 * 1024 * 1024 },
 });
 
 // ==================== HEALTH ====================
@@ -469,12 +479,33 @@ app.post('/api/upload-audio', audioUpload.single('audioFile'), async (req, res) 
       if (!duracion || duracion <= 0) throw new Error('Duración inválida');
     } catch (e) {
       fs.unlinkSync(req.file.path);
-      throw new Error('No se pudo leer la duración del audio (¿es un MP3 válido?)');
+      throw new Error('No se pudo leer la duración del audio: el archivo parece dañado o no es un audio válido');
     }
 
     const audioToken = crypto.randomBytes(16).toString('hex');
     const audioPath = path.join(TEMP_DIR, `audio_${audioToken}.mp3`);
-    fs.renameSync(req.file.path, audioPath);
+    const esMp3 = req.file.mimetype === 'audio/mpeg' || req.file.mimetype === 'audio/mp3';
+    if (esMp3) {
+      fs.renameSync(req.file.path, audioPath);
+    } else {
+      // WAV/M4A/OGG/etc: convertir a MP3 real. El archivo se guarda como .mp3 en todos los
+      // casos y todo lo que sigue (mezcla con ffmpeg, reproductor del navegador, Whisper)
+      // asume eso -- renombrar sin convertir dejaba un WAV llamado .mp3. De paso baja mucho
+      // el peso en el disco efimero de Railway.
+      try {
+        await video.ffmpeg(['-i', req.file.path, '-vn', '-c:a', 'libmp3lame', '-q:a', '2', audioPath]);
+      } catch (e) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+        throw new Error(`No se pudo convertir el audio a MP3: ${e.message}`);
+      }
+      try { fs.unlinkSync(req.file.path); } catch {}
+      // La duracion se midio sobre el original; re-medir sobre el convertido para que el corte
+      // de clips y los subtitulos usen el numero real del archivo que de verdad se va a usar.
+      try {
+        const dur = await video.obtenerDuracion(audioPath);
+        if (dur && dur > 0) duracion = dur;
+      } catch { /* si falla, se queda con la duracion del original: difieren en milisegundos */ }
+    }
 
     // Timing por palabra para los subtítulos (puerta abierta del repo principal, ver tiempos.js):
     // acá no hay alineación de ningún proveedor de TTS porque el audio lo sube el usuario ya

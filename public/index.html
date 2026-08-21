@@ -177,10 +177,10 @@
                 <span class="step-badge"></span>
                 <h2>Paso 5: Sube tu locución</h2>
                 <p style="color:#666;font-size:0.9rem;margin-bottom:10px;">
-                    Graba o genera el audio con tu IA favorita y súbelo aquí en formato MP3.
+                    Graba o genera el audio con tu IA favorita y súbelo aquí (MP3, WAV, M4A, AAC, OGG o FLAC).
                 </p>
                 <div class="form-group">
-                    <input type="file" id="audio-file-input" accept=".mp3,audio/mpeg" onchange="handleAudioFileSelected()">
+                    <input type="file" id="audio-file-input" accept=".mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,audio/*" onchange="handleAudioFileSelected()">
                 </div>
                 <button class="btn btn-primary" id="btn-upload-audio" onclick="handleUploadAudio()" disabled>
                     <span class="icon-slot" data-icon="microphone"></span> Subir audio
