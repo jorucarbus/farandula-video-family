@@ -32,6 +32,39 @@ padding) para que el corte de clips y los subtítulos usen el número del archiv
 usa. Límite de subida 50MB → 150MB, porque un WAV pesa ~10x el MP3 equivalente (~10MB/minuto) y
 el tope viejo dejaba fuera locuciones normales.
 
+**2026-08-21 — "Job no encontrado": los jobs ahora persisten en Postgres** (commit `43e3b0f`).
+El usuario mandó capturas con `❌ Error en la generación del video: Job no encontrado` tres veces
+seguidas. Causa inmediata: mis propios deploys de esa sesión reiniciaron el contenedor mientras
+él estaba a mitad del flujo. Causa de fondo: los jobs vivían SOLO en `const jobs = new Map()`,
+así que **cualquier** reinicio (deploy, crash, sleep de Railway) los borraba y obligaba a
+empezar desde el Paso 1. Estaba documentado más abajo como "aceptado por diseño" — con la app ya
+en manos de los hermanos, dejó de serlo.
+
+Fix: tabla `job_state` (JSONB) en el Postgres que esta app YA tiene para login/historial, sin
+infraestructura nueva. `obtenerJob()` mira el Map y si no está rehidrata desde la base;
+`persistirJob()` guarda al crear el job y tras cada cambio de etapa. Fire-and-forget: si
+Postgres falla el flujo sigue igual. Limpieza de los de +72h al arrancar y cada 6h.
+
+**Lo que NO recupera, a propósito**: los ARCHIVOS (locución subida, video renderizado, cartel)
+siguen en el disco efímero y se pierden igual. Tras un reinicio vuelven fuente/guion/fragmentos/
+asignaciones, pero **hay que volver a subir el audio**. Por eso los endpoints que sirven
+archivos (`/api/cartel`, `/api/video-preview`, `/api/download-*`) siguen usando solo el Map: si
+el contenedor se reinició sus archivos ya no existen y recuperar el job no cambiaría nada.
+
+**Hueco de seguridad preexistente cerrado de paso**: los pasos del pipeline solo comprobaban que
+el job EXISTIERA, no que fuera del usuario que lo pide (`/api/read` y `/api/resintetizar` sí lo
+hacían; los otros 5, no). Con varias cuentas en la misma app, cualquiera con un jobId ajeno
+podía avanzar o leer el proceso de otro. No lo introdujo este cambio, pero los jobs ahora viven
+mucho más, así que se agregó la comprobación de propietario donde faltaba.
+
+⚠️ **Verificado a medias, honestamente**: el `CREATE TABLE job_state` y la query de limpieza
+corren sin error contra el Postgres REAL de producción (log de arranque limpio, sin warnings —
+si la tabla no existiera o la query fuera inválida aparecería `⚠️ No se pudo limpiar
+job_state`). Lo que NO se pudo probar de punta a punta es el ciclo completo "crear job →
+reiniciar → recuperar" por HTTP, porque todos esos endpoints exigen sesión y crear una cuenta
+está fuera de lo que puedo hacer. Vale confirmarlo a mano: empezar un video, esperar/forzar un
+redeploy, y ver que el proceso sigue ahí en vez de "Job no encontrado".
+
 **2026-08-21 — el panel de progreso nunca se veía** (commit `750b48d`). El usuario reportó "no
 sale la pantalla que indica qué procesos está haciendo". El panel existía y `showProgress()` lo
 activaba bien: el problema era de POSICIÓN. Vive al final de la columna "Productos", debajo del
