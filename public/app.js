@@ -161,15 +161,20 @@ function showProgress(label) {
     ocultarError();
     document.getElementById('progress-title').innerHTML = label || 'Procesando...';
     document.getElementById('progress-section').classList.remove('hidden');
+    // La barra de progreso es `position: fixed` abajo (ver style.css): esta clase le agrega
+    // espacio al final del body para que no tape el ultimo bloque de la pagina.
+    document.body.classList.add('procesando');
     updateProgress(0);
 }
 function hideProgress() {
     document.getElementById('progress-section').classList.add('hidden');
+    document.body.classList.remove('procesando');
 }
 
 function mostrarError(mensaje, reintentarFn, volverStepId) {
     log(`❌ ${mensaje}`);
     document.getElementById('progress-section').classList.remove('hidden');
+    document.body.classList.add('procesando');
     const bar = document.getElementById('error-actions');
     if (!bar) return;
     const btnR = document.getElementById('btn-reintentar');

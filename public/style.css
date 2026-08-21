@@ -791,3 +791,30 @@ footer {
 }
 #fuentes-lista .fuente-num { font-weight: 900; }
 #fuentes-lista .fuente-tipo { color: var(--purple); font-weight: 800; }
+
+/* Panel de progreso: barra fija abajo, siempre visible mientras algo corre.
+   Antes vivía al final de la columna "Productos", DEBAJO del Historial — y el Historial mide
+   hasta 74vh (.scroll-snap-col), así que el panel quedaba fuera de pantalla y el usuario nunca
+   veía qué estaba haciendo la app (reportado 2026-08-21: "no sale la pantalla que indica que
+   procesos está haciendo"). Fijo abajo y compacto: se ve siempre, y como solo aparece mientras
+   hay un proceso en curso, no tapa el flujo el resto del tiempo. */
+.progress-section {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 900;
+    background: var(--card);
+    border-top: var(--border);
+    box-shadow: 0 -5px 0 rgba(17, 17, 17, 0.08);
+    padding: 12px 18px 14px;
+    max-height: 45vh;
+    overflow-y: auto;
+}
+.progress-section .log-box {
+    max-height: 90px;
+}
+/* Que la barra fija no tape el final de la página al hacer scroll hasta abajo */
+body.procesando {
+    padding-bottom: 220px;
+}
