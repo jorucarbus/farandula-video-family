@@ -28,7 +28,10 @@ async function obtenerCarpetasFamosos() {
   const res = await cliente.files.list({
     q: `'${FAMOSOS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
     fields: 'files(id, name)',
-    pageSize: 200,
+    // 1000 (el máximo de Drive), igual que el repo principal. Estaba en 200 y truncaba EN
+    // SILENCIO: el usuario ya tiene 264 carpetas de famosos, así que las últimas ~64 eran
+    // invisibles para esta app sin ningún error visible (encontrado al desplegar, 2026-08-21).
+    pageSize: 1000,
   });
   const mapa = {};
   (res.data.files || []).forEach(f => { mapa[f.name] = f.id; });
@@ -41,7 +44,7 @@ async function listarVideos(folderId) {
   const res = await cliente.files.list({
     q: `'${folderId}' in parents and mimeType contains 'video/' and trashed=false`,
     fields: 'files(id, name, videoMediaMetadata(durationMillis))',
-    pageSize: 200,
+    pageSize: 1000,
   });
   return (res.data.files || []).map(f => ({
     id: f.id,
