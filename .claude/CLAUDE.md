@@ -19,6 +19,19 @@ Ya está **en producción**: **https://farandula-video-family-production.up.rail
   NOT EXISTS) — confirmado en el log del primer arranque.
 - Nadie tiene cuenta todavía: cada hermano se registra desde la pantalla de "Registrarse".
 
+**2026-08-21, mismo día — la locución ya acepta WAV/M4A/AAC/OGG/FLAC** (commit `a3c4e7c`).
+Estaba limitada a MP3 en los dos lados (el `accept` del input y el `fileFilter` de multer), y el
+usuario preguntó por qué no leía WAV. Ahora el `fileFilter` acepta los mimetypes reales que
+mandan los navegadores para cada formato (con sus variantes: `audio/wav`, `audio/x-wav`,
+`audio/wave`, `audio/mp4`, `audio/x-m4a`…), verificado caso por caso, y sigue rechazando
+video/imagen. Lo que no sea MP3 se **transcodifica a MP3 real** con ffmpeg al recibirlo — eso
+arregla de paso una mentira que ya existía: el archivo se guardaba como `audio_<token>.mp3`
+pasara lo que pasara, así que aceptar otro formato sin convertir habría dejado un WAV con
+extensión `.mp3`. La duración se re-mide sobre el convertido (el encoder MP3 agrega ~0.08s de
+padding) para que el corte de clips y los subtítulos usen el número del archivo que de verdad se
+usa. Límite de subida 50MB → 150MB, porque un WAV pesa ~10x el MP3 equivalente (~10MB/minuto) y
+el tope viejo dejaba fuera locuciones normales.
+
 **Bug real encontrado al desplegar** (commit `911d927`): `drive.js` pedía a Drive `pageSize: 200`
 sin bucle de paginación, y el usuario ya tiene **264** carpetas de famosos — las últimas ~64
 eran invisibles para esta app, EN SILENCIO (sin error ni warning). El repo principal ya usaba
