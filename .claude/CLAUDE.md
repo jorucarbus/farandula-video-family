@@ -32,6 +32,27 @@ padding) para que el corte de clips y los subtítulos usen el número del archiv
 usa. Límite de subida 50MB → 150MB, porque un WAV pesa ~10x el MP3 equivalente (~10MB/minuto) y
 el tope viejo dejaba fuera locuciones normales.
 
+**2026-08-21 — el historial no servía para nada, ahora abre el proceso** (commit `6653915`).
+El usuario dijo "no funciona el historial" y tenía razón: la lista SÍ mostraba los procesos
+(fecha + estado), pero las tarjetas eran texto muerto — sin click, sin forma de abrir ninguno.
+Ver un proceso a medias en la lista y aun así tener que rehacerlo desde el Paso 1. Hasta este
+día tampoco se podía arreglar: los jobs vivían solo en memoria, así que "retomar" no tenía de
+dónde leer; recién con `job_state` en Postgres (arriba) tiene sentido.
+
+- `GET /api/job/:jobId` (nuevo): job completo, con comprobación de propietario, más
+  `audioDisponible` para que la UI sepa si el MP3 sigue en disco.
+- Tarjetas clickeables → `retomarProceso()` rehidrata hasta el paso exacto donde quedó: crónica
+  y fuentes en el Paso 1, guion en el editor, asignaciones pintadas, reproductor listo si el
+  audio sigue ahí. Hace `lockFrom('script-section')` antes de pintar para no dejar restos del
+  proceso anterior.
+- Si el audio ya no está (disco efímero), deja el Paso 5 activo con aviso explícito en vez de
+  fallar más adelante sin explicación.
+
+Verificado en navegador real con el backend stubbeado (misma técnica de la copia descartable
+descrita abajo): tarjeta clickeable; al abrirla, fuente/script/guion en `done`, revisión en
+`active`, 2 asignaciones pintadas y el guion en el editor; y el caso "audio perdido tras
+reinicio" deja el Paso 5 activo con el aviso.
+
 **2026-08-21 — "Job no encontrado": los jobs ahora persisten en Postgres** (commit `43e3b0f`).
 El usuario mandó capturas con `❌ Error en la generación del video: Job no encontrado` tres veces
 seguidas. Causa inmediata: mis propios deploys de esa sesión reiniciaron el contenedor mientras
