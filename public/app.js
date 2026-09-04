@@ -730,6 +730,60 @@ const ESTADO_HISTORIAL = {
     lectura: 'Iniciado', guion: 'En guion', fragmentos: 'Fragmentado',
     audio: 'Con audio', video_ok: 'Video listo', insumos_ok: 'Insumos listos',
 };
+// Procesos tildados para borrar. Se vacía en cada recarga de la lista: dejar marcas viejas
+// después de que la lista cambió es cómo se borra algo que no se quería.
+const seleccionados = new Set();
+
+function actualizarBarraSeleccion() {
+    const barra = document.getElementById('historial-acciones');
+    const contador = document.getElementById('historial-contador');
+    if (!barra || !contador) return;
+    barra.classList.toggle('hidden', seleccionados.size === 0);
+    contador.textContent = seleccionados.size === 1
+        ? '1 seleccionado'
+        : `${seleccionados.size} seleccionados`;
+}
+
+function limpiarSeleccion() {
+    seleccionados.clear();
+    document.querySelectorAll('#historial-lista input[type="checkbox"]').forEach(c => { c.checked = false; });
+    actualizarBarraSeleccion();
+}
+
+// Borrar lo tildado. Se pregunta QUÉ borrar, porque son dos cosas muy distintas:
+//   - quitar de la lista: la tarjeta se va, el proceso guardado sigue y se puede retomar;
+//   - borrar del todo: se va también el proceso guardado, y ya no hay forma de volver a él.
+//
+// El video que cada uno haya descargado a su computadora NO lo toca nadie: en esta app el archivo
+// no se sube a ningún lado, se descarga y listo (decisión del usuario, 2026-08-30).
+async function borrarSeleccionados() {
+    const ids = [...seleccionados];
+    if (!ids.length) return;
+
+    const cuantos = ids.length === 1 ? 'este proceso' : `estos ${ids.length} procesos`;
+    const completo = confirm(
+        `Vas a borrar ${cuantos} de tu historial.\n\n`
+        + 'ACEPTAR = borrar del todo: se va también el proceso guardado y NO vas a poder retomarlo.\n'
+        + 'CANCELAR = solo quitarlo de la lista: el proceso se conserva.\n\n'
+        + 'Los videos que ya descargaste a tu computadora no se tocan en ningún caso.'
+    );
+
+    try {
+        const r = await apiCall('/history', 'DELETE', { jobIds: ids, completo });
+        if (r.historial === 0) {
+            alert('No se borró nada: esos procesos no figuran en tu historial.');
+            return;
+        }
+        log(completo
+            ? `🗑️ ${r.historial} proceso(s) borrados del todo`
+            : `🗑️ ${r.historial} proceso(s) quitados de la lista (se conservan y se pueden retomar)`);
+        seleccionados.clear();
+        await cargarHistorial();
+    } catch (e) {
+        alert(`No se pudo borrar: ${e.message}`);
+    }
+}
+
 async function cargarHistorial() {
     const cont = document.getElementById('historial-lista');
     cont.innerHTML = '<p style="color:#666;">Cargando...</p>';
@@ -741,18 +795,39 @@ async function cargarHistorial() {
             return;
         }
         cont.innerHTML = '';
+        seleccionados.clear();
+        actualizarBarraSeleccion();
         items.forEach(item => {
             const div = document.createElement('div');
             div.className = 'historial-item';
-            div.style.cssText = 'border:2px solid #000;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;';
-            div.title = 'Clic para retomar este proceso';
+            div.style.cssText = 'border:2px solid #000;border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start;';
             const fecha = new Date(item.fecha).toLocaleString();
-            div.innerHTML = `
+
+            // La casilla va aparte del cuerpo clickeable: tildar para borrar y abrir para retomar
+            // son dos intenciones distintas, y mezclarlas en el mismo clic termina en borrados sin
+            // querer o en aperturas cuando solo se quería marcar.
+            const check = document.createElement('input');
+            check.type = 'checkbox';
+            check.style.cssText = 'margin-top:3px;width:18px;height:18px;flex-shrink:0;cursor:pointer;';
+            check.title = 'Seleccionar para borrar';
+            check.onchange = () => {
+                if (check.checked) seleccionados.add(item.job_id);
+                else seleccionados.delete(item.job_id);
+                actualizarBarraSeleccion();
+            };
+
+            const cuerpo = document.createElement('div');
+            cuerpo.style.cssText = 'flex:1;cursor:pointer;';
+            cuerpo.title = 'Clic para retomar este proceso';
+            cuerpo.innerHTML = `
                 <div style="font-weight:900;font-size:0.85rem;">${ESTADO_HISTORIAL[item.status] || item.status}</div>
                 <div style="color:#666;font-size:0.75rem;margin-top:3px;">${fecha}${item.duracion ? ` · ${Math.round(item.duracion)}s` : ''}${item.video_name ? ` · ${item.video_name}` : ''}</div>
                 <div style="color:#0a7;font-size:0.72rem;font-weight:800;margin-top:5px;">↩︎ Retomar</div>
             `;
-            div.onclick = () => retomarProceso(item.job_id);
+            cuerpo.onclick = () => retomarProceso(item.job_id);
+
+            div.appendChild(check);
+            div.appendChild(cuerpo);
             cont.appendChild(div);
         });
     } catch (error) {

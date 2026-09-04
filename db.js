@@ -153,6 +153,39 @@ async function getJobHistoryItem(userId, jobId) {
   return result.rows[0] || null;
 }
 
+// Borra procesos del historial de UN usuario.
+//
+// `completo` decide qué se lleva:
+//   false → solo la fila del historial. La tarjeta desaparece de la lista, pero el proceso guardado
+//           sigue existiendo. Sirve para ordenar la lista sin perder trabajo.
+//   true  → también el `job_state`, o sea el proceso guardado. Ya no se puede retomar.
+//
+// LA SEGURIDAD ESTÁ EN EL `WHERE`, no en la pantalla: las dos consultas filtran por `user_id`, así
+// que un usuario no puede borrar lo de otro ni conociendo su jobId. Nunca quitar ese filtro para
+// "simplificar".
+//
+// Devuelve cuántas filas se borraron de cada tabla — quien llama lo informa, y si da 0 es que esos
+// jobs no eran suyos.
+async function deleteJobHistory(userId, jobIds, completo = false) {
+  const ids = (Array.isArray(jobIds) ? jobIds : [jobIds]).filter(Boolean);
+  if (!ids.length) return { historial: 0, procesos: 0 };
+
+  const res = await pool.query(
+    'DELETE FROM job_history WHERE user_id = $1 AND job_id = ANY($2::varchar[])',
+    [userId, ids]
+  );
+
+  let procesos = 0;
+  if (completo) {
+    const res2 = await pool.query(
+      'DELETE FROM job_state WHERE user_id = $1 AND job_id = ANY($2::varchar[])',
+      [userId, ids]
+    );
+    procesos = res2.rowCount || 0;
+  }
+  return { historial: res.rowCount || 0, procesos };
+}
+
 async function updateJobHistory(userId, jobId, updates) {
   const allowedFields = ['canal', 'duracion', 'video_name', 'status'];
   const validUpdates = Object.keys(updates)
@@ -207,6 +240,7 @@ module.exports = {
   getJobHistory,
   getJobHistoryItem,
   updateJobHistory,
+  deleteJobHistory,
   // Estado del job en curso (sobrevive reinicios del contenedor)
   guardarJobState,
   cargarJobState,

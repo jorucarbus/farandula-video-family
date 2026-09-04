@@ -369,6 +369,13 @@
                 <button class="btn-copy" type="button" onclick="cargarHistorial()" title="Actualizar historial"><span class="icon-slot" data-icon="arrowsClockwise"></span></button>
             </div>
             <div class="form-section" id="historial-section">
+                <!-- Barra de selección: aparece solo cuando hay algo tildado, para no ocupar lugar
+                     ni invitar a borrar por accidente. -->
+                <div id="historial-acciones" class="hidden" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+                    <span id="historial-contador" style="font-size:0.8rem;font-weight:800;"></span>
+                    <button class="btn-copy" type="button" onclick="borrarSeleccionados()">🗑️ Borrar seleccionados</button>
+                    <button class="btn-copy" type="button" onclick="limpiarSeleccion()">Cancelar</button>
+                </div>
                 <div id="historial-lista" class="scroll-snap-col"></div>
             </div>
 

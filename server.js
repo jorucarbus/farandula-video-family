@@ -862,6 +862,36 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
+// Borrar procesos del historial. Cada uno solo puede borrar LO SUYO: el userId sale del token de
+// sesión (`req.user`), nunca del cuerpo del pedido, y la consulta filtra por él.
+//
+// `completo`:
+//   false → solo la tarjeta del historial; el proceso guardado sigue y se puede retomar.
+//   true  → también el proceso guardado. Deja de poder retomarse.
+//
+// Lo que NO toca, y es a propósito: el archivo de video. En esta app no se sube a Drive — se genera
+// en el disco del servidor, cada uno lo descarga a su computadora, y el disco se limpia solo. Lo que
+// ya bajaron a su máquina es de ellos y no lo administra la app (decisión del usuario, 2026-08-30).
+app.delete('/api/history', async (req, res) => {
+  try {
+    const { jobIds, completo } = req.body || {};
+    const ids = Array.isArray(jobIds) ? jobIds.filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ error: 'No se indicó qué borrar' });
+    if (ids.length > 50) return res.status(400).json({ error: 'Demasiados a la vez (máximo 50)' });
+
+    const r = await db.deleteJobHistory(req.user.userId, ids, Boolean(completo));
+    // Los que quedaron en memoria hay que soltarlos también: si no, un proceso borrado seguiría
+    // respondiendo hasta el próximo reinicio.
+    if (completo) for (const id of ids) jobs.delete(id);
+
+    console.log(`🗑️  Usuario ${req.user.userId} borró ${r.historial} del historial${completo ? ` y ${r.procesos} proceso(s) guardado(s)` : ''}`);
+    res.json({ status: 'success', ...r, pedidos: ids.length });
+  } catch (error) {
+    console.error('Error borrando historial:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // ==================== STARTUP ====================
 async function startup() {
   try {
