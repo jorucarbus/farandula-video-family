@@ -101,7 +101,7 @@ PROHIBIDO:
 
 // Un intento contra UN modelo, con reintentos internos por sobrecarga temporal.
 // Marca el error con _geminiTemporal para que callGemini sepa si vale la pena caer al siguiente modelo.
-async function intentarModelo(modelo, prompt, userParts, configExtra) {
+async function intentarModelo(modelo, prompt, userParts, configExtra, sinThinking = false) {
   // Pocos reintentos por modelo: como hay cadena de fallback, conviene saltar rápido
   // al siguiente modelo en vez de insistir mucho en uno saturado.
   const MAX_INTENTOS = 2;
@@ -120,8 +120,9 @@ async function intentarModelo(modelo, prompt, userParts, configExtra) {
           temperature: 0.7,
           topP: 0.95,
           maxOutputTokens: 8192,
-          // Desactivar el razonamiento interno: consume el límite de tokens y corta la salida
-          thinkingConfig: { thinkingBudget: 0 },
+          // Desactivar el razonamiento interno: consume el límite de tokens y corta la salida. Pero
+          // no todos los modelos lo aceptan — ver el reintento `sinThinking` más abajo.
+          ...(sinThinking ? {} : { thinkingConfig: { thinkingBudget: 0 } }),
           ...configExtra,
         }
       });
@@ -132,7 +133,14 @@ async function intentarModelo(modelo, prompt, userParts, configExtra) {
         const texto = parts.map(p => p.text || '').join('');
         if (texto.trim()) return texto;
       }
-      throw new Error('No hay respuesta de Gemini');
+      // Respuesta sin texto (bloqueo de seguridad, corte por finishReason, glitch de ESE modelo).
+      // Se marca `_vacia` para tratarla como un error temporal: reintenta una vez y, si sigue
+      // vacía, cae al siguiente modelo. Antes era un Error común sin `.response`, y la cadena
+      // entera se cortaba en el primer modelo sin probar los demás.
+      const motivo = response.data.candidates?.[0]?.finishReason || response.data?.promptFeedback?.blockReason;
+      const vacia = new Error(`No hay respuesta de Gemini${motivo ? ` (${motivo})` : ''}`);
+      vacia._vacia = true;
+      throw vacia;
     } catch (error) {
       // 429 = límite de tasa; 503 = modelo sobrecargado; 500 = error interno. Todos temporales.
       const status = error.response?.status;
@@ -140,7 +148,27 @@ async function intentarModelo(modelo, prompt, userParts, configExtra) {
       // diagnosticar). Lo adjuntamos para que el log/registro diga QUÉ rechazó Gemini.
       const detalleApi = error.response?.data?.error?.message;
       if (detalleApi) error.message = `${modelo} → ${status}: ${detalleApi}`;
-      const temporal = status === 429 || status === 503 || status === 500;
+      // Crédito agotado: es de la CUENTA, no del modelo. Esperar o probar otro no lo arregla.
+      const sinCredito = status === 429 && /credit|billing|quota.*exceeded|depleted/i.test(detalleApi || '');
+      if (sinCredito) {
+        error.message = 'Se acabó el crédito de la cuenta de Gemini (https://ai.studio/projects). '
+          + `Dijo: ${detalleApi}`;
+        error._geminiSiguienteModelo = false;
+        throw error;
+      }
+
+      // Un 400 puede ser ESTE modelo rechazando `thinkingBudget:0` (`gemini-flash-lite-latest` lo
+      // rechaza siempre). Se reintenta UNA vez, mismo modelo, sin thinkingConfig.
+      if (status === 400 && !sinThinking) {
+        console.warn(`  ⚠️  ${modelo} rechazó thinkingConfig (400); reintentando sin él...`);
+        try {
+          return await intentarModelo(modelo, prompt, userParts, configExtra, true);
+        } catch {
+          // Tampoco sin thinking: sigue el manejo normal (cae al siguiente modelo).
+        }
+      }
+
+      const temporal = status === 429 || status === 503 || status === 500 || error._vacia;
       if (temporal && intento < MAX_INTENTOS) {
         const espera = (status === 429 ? 20000 : 8000) * intento;
         console.log(`⏳ ${modelo} respondió ${status}, esperando ${espera / 1000}s (intento ${intento}/${MAX_INTENTOS - 1})...`);
